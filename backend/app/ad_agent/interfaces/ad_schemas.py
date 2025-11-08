@@ -1,0 +1,135 @@
+"""Schemas for AI Ad Agent."""
+from typing import Optional, List, Dict, Any
+from pydantic import BaseModel, Field
+from datetime import datetime
+from enum import Enum
+
+
+class AdJobStatus(str, Enum):
+    """Status of ad creation job."""
+    PENDING = "pending"
+    ANALYZING_SCRIPT = "analyzing_script"
+    GENERATING_PROMPTS = "generating_prompts"
+    GENERATING_VIDEOS = "generating_videos"
+    VERIFYING_CLIPS = "verifying_clips"  # NEW: Verify clips match script
+    MERGING_VIDEOS = "merging_videos"
+    GETTING_SUGGESTIONS = "getting_suggestions"
+    ENHANCING_VOICE = "enhancing_voice"
+    ADDING_AUDIO = "adding_audio"
+    FINALIZING = "finalizing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class ClipVerification(BaseModel):
+    """Verification results for a video clip."""
+    verified: bool = False
+    confidence_score: float = 0.0  # 0.0 to 1.0
+    visual_description: Optional[str] = None  # What Gemini Vision sees in the clip
+    script_segment: Optional[str] = None  # Expected script content
+    alignment_feedback: Optional[str] = None  # How well it matches
+    retry_count: int = 0
+
+
+class VideoClip(BaseModel):
+    """Individual video clip information."""
+    clip_number: int
+    prompt: str
+    script_segment: Optional[str] = None  # Corresponding script text
+    veo_job_id: Optional[str] = None
+    video_url: Optional[str] = None
+    duration: float = 7.0  # Veo 3.1 max 7 seconds
+    status: str = "pending"
+    error: Optional[str] = None
+    verification: Optional[ClipVerification] = None  # Clip verification results
+
+
+class CreativeSuggestion(BaseModel):
+    """Creative suggestions from Gemini."""
+    animations: List[str] = Field(default_factory=list)
+    text_overlays: List[str] = Field(default_factory=list)
+    gifs: List[str] = Field(default_factory=list)
+    effects: List[str] = Field(default_factory=list)
+    general_feedback: Optional[str] = None
+
+
+class AdRequest(BaseModel):
+    """Request to create an AI video ad."""
+    campaign_id: str = Field(..., description="Campaign ID from campaigns table")
+    script: str = Field(..., description="The dialogue/script for the ad")
+    character_image: str = Field(..., description="Base64 encoded image of the character (e.g., Heather)")
+    character_name: Optional[str] = Field(default="character", description="Name of the character")
+    voice_id: Optional[str] = Field(default=None, description="ElevenLabs voice ID (e.g., Heather Bryant)")
+    background_music_prompt: Optional[str] = Field(default=None, description="Prompt for background music")
+    add_sound_effects: bool = Field(default=True, description="Whether to add sound effects")
+    aspect_ratio: str = Field(default="16:9", description="Aspect ratio for videos")
+    resolution: str = Field(default="1080p", description="Video resolution")
+    # Verification settings (NEW)
+    enable_verification: bool = Field(
+        default=True,
+        description="Verify generated clips match script content using Gemini Vision"
+    )
+    verification_threshold: float = Field(
+        default=0.6,
+        ge=0.0,
+        le=1.0,
+        description="Minimum confidence score (0.0-1.0) for clip verification to pass"
+    )
+
+
+class AdJob(BaseModel):
+    """Ad creation job status."""
+    job_id: str
+    campaign_id: str
+    user_id: str
+    status: AdJobStatus
+    progress: int = Field(default=0, ge=0, le=100, description="Progress percentage")
+    current_step: Optional[str] = None
+
+    # Input
+    script: str
+    character_image: str
+    character_name: str
+
+    # Generated outputs
+    veo_prompts: List[str] = Field(default_factory=list)
+    video_clips: List[VideoClip] = Field(default_factory=list)
+    merged_video_url: Optional[str] = None
+    creative_suggestions: Optional[CreativeSuggestion] = None
+    final_video_url: Optional[str] = None
+
+    # Metadata
+    created_at: datetime
+    updated_at: datetime
+    completed_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+
+    # Costs
+    total_cost: float = 0.0
+    cost_breakdown: Dict[str, float] = Field(default_factory=dict)
+
+
+class AdJobResponse(BaseModel):
+    """Response for ad job status."""
+    job_id: str
+    status: AdJobStatus
+    progress: int
+    current_step: Optional[str] = None
+    final_video_url: Optional[str] = None
+    error_message: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class VeoPromptRequest(BaseModel):
+    """Request to generate Veo prompts from script."""
+    script: str
+    character_name: str = "character"
+    max_clip_duration: int = 7
+
+
+class VeoPromptResponse(BaseModel):
+    """Response with generated Veo prompts."""
+    prompts: List[str]
+    total_clips: int
+    estimated_duration: float

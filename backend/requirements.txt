@@ -1,0 +1,32 @@
+# Alternative to pyproject.toml for pip-based installs
+# Core Framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+
+# Data Validation
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# HTTP Client
+httpx>=0.26.0
+
+# Environment
+python-dotenv>=1.0.0
+
+# Google Cloud
+google-cloud-firestore>=2.14.0
+google-cloud-storage>=2.14.0
+google-cloud-secret-manager>=2.17.0
+firebase-admin>=6.4.0
+
+# File Handling
+python-multipart>=0.0.6
+aiofiles>=23.2.1
+
+# Authentication
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+
+# Utilities
+tenacity>=8.2.3
+pillow>=10.2.0
