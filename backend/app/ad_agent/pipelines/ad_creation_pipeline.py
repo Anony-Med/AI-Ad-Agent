@@ -191,6 +191,14 @@ class AdCreationPipeline:
 
         logger.info(f"Starting ad creation pipeline: {job_id}")
 
+        # Reinitialize prompt_agent with storage client, job_id, and user_id for GCS logging
+        self.prompt_agent = PromptGeneratorAgent(
+            api_key=self.prompt_agent.gemini.api_key,
+            storage_client=self.storage,
+            job_id=job_id,
+            user_id=user_id
+        )
+
         # Upload character image to GCS to avoid Firestore 1MB limit
         character_image_gcs_url = None
         if request.character_image:

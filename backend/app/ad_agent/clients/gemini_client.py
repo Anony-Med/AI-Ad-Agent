@@ -1,7 +1,9 @@
 """Direct Gemini API client for text/chat generation."""
 import os
 import logging
+import json
 from typing import Optional, List, Dict, Any
+from datetime import datetime
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -11,12 +13,15 @@ logger = logging.getLogger(__name__)
 class GeminiClient:
     """Client for Google Gemini AI text generation."""
 
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, storage_client=None, job_id: Optional[str] = None, user_id: Optional[str] = None):
         """
         Initialize Gemini client.
 
         Args:
             api_key: Google AI API key. If not provided, reads from environment.
+            storage_client: Optional GCS storage client for saving prompts/responses
+            job_id: Optional job ID for GCS logging
+            user_id: Optional user ID for GCS logging
         """
         self.api_key = api_key or os.getenv("GOOGLE_AI_API_KEY") or os.getenv("GEMINI_API_KEY")
         if not self.api_key:
@@ -25,6 +30,30 @@ class GeminiClient:
         self.base_url = "https://generativelanguage.googleapis.com/v1beta"
         self.model = "gemini-2.0-flash-exp"  # Fast and efficient
         self.timeout = 120
+        self.storage = storage_client
+        self.job_id = job_id
+        self.user_id = user_id
+
+    async def _save_to_gcs(self, filename: str, data: dict):
+        """Save data to GCS for debugging and analysis."""
+        if not self.storage or not self.job_id or not self.user_id:
+            logger.debug("GCS storage not configured, skipping save")
+            return
+
+        try:
+            from app.config import settings
+            blob_path = f"jobs/{self.job_id}/{filename}"
+
+            # Convert data to JSON string
+            json_data = json.dumps(data, indent=2, ensure_ascii=False)
+
+            # Upload to GCS
+            blob = self.storage.bucket.blob(blob_path)
+            blob.upload_from_string(json_data, content_type="application/json")
+
+            logger.info(f"Saved Gemini log to GCS: {blob_path}")
+        except Exception as e:
+            logger.warning(f"Failed to save to GCS: {e}")
 
     @retry(
         stop=stop_after_attempt(3),
@@ -181,12 +210,14 @@ CRITICAL REQUIREMENTS:
 ● Avoid static/stationary poses - character should be actively doing something
 ● Describe camera angles, lighting, character expressions AND movements
 
-STRICT SCRIPT ADHERENCE RULES:
-● Use ONLY the EXACT words from the script - do NOT add extra dialogue or paraphrase
-● Do NOT repeat words from the script in the prompt
-● Do NOT add filler words or extra speech not in the original script
-● If a segment is short, let there be SILENCE with visual action only
-● Better to have silence than to add words not in the script
+STRICT SCRIPT ADHERENCE RULES - CRITICAL:
+● The avatar MUST speak ONLY the EXACT words from the script - NO paraphrasing, NO additions
+● Put the EXACT script text in "quotes" in the script_segments array
+● The avatar will lip-sync to these EXACT words - any deviation will cause misalignment
+● Do NOT add filler words, extra dialogue, or modify the script in ANY way
+● If a segment is short, allow SILENCE with visual action only
+● Better to have silence than to add words not in the original script
+● The script text is SACRED - use it verbatim without ANY changes
 
 FORBIDDEN ELEMENTS:
 ● NO text animations, captions, or on-screen text overlays in prompts
@@ -199,26 +230,29 @@ Output format: Return a JSON object with two arrays:
 
 Be precise - use the exact script words without modification."""
 
-        prompt = f"""Script (USE EXACT WORDS):
+        prompt = f"""Script (USE THESE EXACT WORDS ONLY - VERBATIM):
 "{script}"
 
 Character: {character_name}
 
 Break this script into:
 1. DYNAMIC Veo 3.1 video prompts (describe camera, scenery, setting, ACTION, MOVEMENT - but DO NOT repeat the script words in the description)
-2. Corresponding EXACT script segments (use exact words from the script above)
+2. Corresponding EXACT script segments - COPY the exact words from the script above, word-for-word
 
 Each clip should be 7 seconds max.
 
-CRITICAL RULES:
-1. Use the EXACT WORDS from the script in script_segments - do not paraphrase or add dialogue
-2. Split the script naturally across multiple clips (cover ALL the script text)
-3. Character must be MOVING and SHOWING things related to the script
-4. Include rich scenery/environment descriptions in prompts
-5. DO NOT include text overlays, captions, or animations in prompts
-6. DO NOT repeat the script words when describing the visual scene
-7. If a segment is short, allow SILENCE with visual action only
-8. Better to have silence than add words not in the script
+🚨 CRITICAL RULES - THE AVATAR WILL SPEAK ONLY THESE EXACT WORDS:
+1. Copy the EXACT WORDS from the script into script_segments - character by character, no modifications
+2. The avatar's lip-sync depends on these EXACT words - any change will break synchronization
+3. Put each script segment in "quotes" to ensure exact text is preserved
+4. Split the script naturally across multiple clips (cover ALL the script text)
+5. Character must be MOVING and SHOWING things related to the script
+6. Include rich scenery/environment descriptions in prompts
+7. DO NOT include text overlays, captions, or animations in prompts
+8. DO NOT repeat the script words when describing the visual scene
+9. If a segment is short, allow SILENCE with visual action only
+10. Better to have silence than add words not in the script
+11. NEVER paraphrase, summarize, or reword the script - use it VERBATIM
 
 Return in this JSON format with DYNAMIC prompts:
 {{
@@ -239,8 +273,18 @@ Generate DYNAMIC prompts NOW (remember: scenery descriptions YES, text overlays 
             max_tokens=2048,
         )
 
+        # Save prompt and response to GCS for debugging
+        await self._save_to_gcs("gemini_prompt_generation.json", {
+            "timestamp": datetime.utcnow().isoformat(),
+            "model": self.model,
+            "system_instruction": system_instruction,
+            "user_prompt": prompt,
+            "response": response,
+            "original_script": script,
+            "character_name": character_name,
+        })
+
         # Parse JSON from response
-        import json
         import re
 
         # Try to extract JSON object from response
@@ -254,6 +298,14 @@ Generate DYNAMIC prompts NOW (remember: scenery descriptions YES, text overlays 
             min_len = min(len(prompts), len(segments))
             prompts = prompts[:min_len]
             segments = segments[:min_len]
+
+            # Save parsed results to GCS
+            await self._save_to_gcs("gemini_parsed_prompts.json", {
+                "timestamp": datetime.utcnow().isoformat(),
+                "prompts": prompts,
+                "script_segments": segments,
+                "total_clips": len(prompts),
+            })
 
             logger.info(f"Generated {len(prompts)} prompts with script segments")
             return prompts, segments

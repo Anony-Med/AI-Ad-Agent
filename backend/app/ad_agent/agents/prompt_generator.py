@@ -9,9 +9,14 @@ logger = logging.getLogger(__name__)
 class PromptGeneratorAgent:
     """Generates optimized Veo 3.1 prompts from ad scripts."""
 
-    def __init__(self, api_key: str = None):
+    def __init__(self, api_key: str = None, storage_client=None, job_id: str = None, user_id: str = None):
         """Initialize with Gemini client."""
-        self.gemini = GeminiClient(api_key=api_key)
+        self.gemini = GeminiClient(
+            api_key=api_key,
+            storage_client=storage_client,
+            job_id=job_id,
+            user_id=user_id
+        )
 
     @staticmethod
     def normalize_script(script: str) -> str:
