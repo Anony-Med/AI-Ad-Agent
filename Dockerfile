@@ -33,7 +33,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 # Install system dependencies required for Python packages and video processing
 # gcc: Required for building some Python packages
-# ffmpeg: Required for video processing
+# ffmpeg: Required for video processing and merging clips
 # libpq-dev: PostgreSQL library
 RUN apt-get update && apt-get install -y \
     gcc \
