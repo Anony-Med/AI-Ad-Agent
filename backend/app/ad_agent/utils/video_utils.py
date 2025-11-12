@@ -73,9 +73,10 @@ class VideoProcessor:
 
         Returns:
             Path to merged video
+
+        Note:
+            ffmpeg availability is checked once at application startup.
         """
-        if not VideoProcessor.check_ffmpeg():
-            raise RuntimeError("ffmpeg not installed. Install with: apt-get install ffmpeg")
 
         if not video_urls:
             raise ValueError("No videos to merge")
@@ -150,9 +151,6 @@ class VideoProcessor:
         Returns:
             Path to output video
         """
-        if not VideoProcessor.check_ffmpeg():
-            raise RuntimeError("ffmpeg not installed")
-
         ffmpeg_cmd = [
             "ffmpeg",
             "-i", video_path,
@@ -204,8 +202,6 @@ class VideoProcessor:
         Returns:
             Path to output video
         """
-        if not VideoProcessor.check_ffmpeg():
-            raise RuntimeError("ffmpeg not installed")
 
         if sfx_path and os.path.exists(sfx_path):
             # Mix all three: video audio, music, and SFX
@@ -380,8 +376,6 @@ class VideoProcessor:
         Returns:
             Path to output video
         """
-        if not VideoProcessor.check_ffmpeg():
-            raise RuntimeError("ffmpeg not installed")
 
         # Position mapping
         positions = {
@@ -456,8 +450,6 @@ class VideoProcessor:
         if not text_overlays:
             return video_path
 
-        if not VideoProcessor.check_ffmpeg():
-            raise RuntimeError("ffmpeg not installed")
 
         # Build complex filter with multiple drawtext filters
         filters = []
@@ -538,8 +530,6 @@ class VideoProcessor:
         if not effects:
             return video_path
 
-        if not VideoProcessor.check_ffmpeg():
-            raise RuntimeError("ffmpeg not installed")
 
         # Get video info for effect calculations
         info = VideoProcessor.get_video_info(video_path)
@@ -622,8 +612,6 @@ class VideoProcessor:
         Returns:
             Path to output video
         """
-        if not VideoProcessor.check_ffmpeg():
-            raise RuntimeError("ffmpeg not installed")
 
         # Position mapping for overlay filter
         positions = {
@@ -721,10 +709,11 @@ class VideoProcessor:
 
         Raises:
             RuntimeError: If ffmpeg fails
-        """
-        if not VideoProcessor.check_ffmpeg():
-            raise RuntimeError("ffmpeg not installed")
 
+        Note:
+            ffmpeg availability is checked once at application startup.
+            This method assumes ffmpeg is available and will raise an error if not.
+        """
         # Use ffmpeg to extract the last frame
         # -sseof -1 seeks to 1 second before end
         # -frames:v 1 extracts one frame

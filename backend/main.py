@@ -92,6 +92,18 @@ async def lifespan(app: FastAPI):
         logger.error(f"❌ Failed to load database module: {e}")
         logger.warning("Continuing with limited functionality...")
 
+    # Verify ffmpeg is available (required for video processing)
+    try:
+        from app.ad_agent.utils.video_utils import VideoProcessor
+        if VideoProcessor.check_ffmpeg():
+            logger.info("✅ FFmpeg available for video processing")
+        else:
+            logger.error("❌ FFmpeg not found - video processing will fail!")
+            raise RuntimeError("FFmpeg is required but not installed")
+    except Exception as e:
+        logger.error(f"❌ FFmpeg check failed: {e}")
+        raise
+
     logger.info("🚀 Application startup complete!")
 
     yield
