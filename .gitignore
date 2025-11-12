@@ -1,0 +1,299 @@
+# ============================================
+# AI Ad Agent .gitignore
+# ============================================
+
+# ============================================
+# Documentation & Informative Files
+# ============================================
+# Keep main README.md for GitHub/Git
+!README.md
+
+# Ignore docs folder and other readme variants
+docs/
+README_*.md
+
+# ============================================
+# Test Scripts & Files (Root Level)
+# ============================================
+run_ad.py
+create_ad_test.py
+test_simple_ad.py
+monitor_progress.py
+watch_logs.py
+kill_port.py
+
+# ============================================
+# Test Assets
+# ============================================
+Avatar.png
+logo.png
+*.mp4
+veo_avatar_test_*.mp4
+
+# Text files with encoded data
+avatar_b64.txt
+avatar_512_b64.txt
+logo_b64.txt
+ad_run_output.txt
+
+# ============================================
+# Test Directory
+# ============================================
+tests/
+
+# ============================================
+# Logs & Temporary Files
+# ============================================
+logs/
+*.log
+nul
+
+# ============================================
+# Python
+# ============================================
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+cover/
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# Flask stuff:
+instance/
+.webassets-cache
+
+# Scrapy stuff:
+.scrapy
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+.pybuilder/
+target/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IPython
+profile_default/
+ipython_config.py
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# poetry
+poetry.lock
+
+# pdm
+.pdm.toml
+
+# PEP 582
+__pypackages__/
+
+# Celery stuff
+celerybeat-schedule
+celerybeat.pid
+
+# SageMath parsed files
+*.sage.py
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Spyder project settings
+.spyderproject
+.spyproject
+
+# Rope project settings
+.ropeproject
+
+# mkdocs documentation
+/site
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Pyre type checker
+.pyre/
+
+# pytype static type analyzer
+.pytype/
+
+# Cython debug symbols
+cython_debug/
+
+# ============================================
+# IDEs and Editors
+# ============================================
+# VSCode
+.vscode/
+*.code-workspace
+
+# PyCharm
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# ============================================
+# Operating System Files
+# ============================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux
+*~
+
+# ============================================
+# Claude Code Configuration (Optional)
+# ============================================
+.claude/
+
+# ============================================
+# GCP & Secrets (IMPORTANT - Never commit!)
+# ============================================
+*.json
+!backend/app/**/*.json
+service-account-key.json
+credentials.json
+gcp-key.json
+firebase-adminsdk-*.json
+
+# ============================================
+# API Keys & Secrets (IMPORTANT - Never commit!)
+# ============================================
+.env
+.env.local
+.env.*.local
+secrets/
+*.pem
+*.key
+
+# ============================================
+# Media & Assets (Generated/Test)
+# ============================================
+*.mp4
+*.mp3
+*.wav
+*.m4a
+*.aac
+*.png
+*.jpg
+*.jpeg
+*.gif
+!backend/app/static/**/*
+
+# ============================================
+# Backup & Temporary Files
+# ============================================
+*.bak
+*.tmp
+*.temp
+*.old
+*.orig
+*.rej
+*~
+
+# ============================================
+# Project Specific
+# ============================================
+# Output files
+output/
+exports/
+generated/
+
+# Database files (if using local SQLite for testing)
+*.db
+*.sqlite
+*.sqlite3
+
+# Cache directories
+.cache/
+cache/

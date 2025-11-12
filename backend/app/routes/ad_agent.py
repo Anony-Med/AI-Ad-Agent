@@ -1,7 +1,11 @@
 """API routes for AI Ad Agent."""
 import logging
-from typing import Optional
-from fastapi import APIRouter, HTTPException, status, Depends, BackgroundTasks
+import json
+import asyncio
+from typing import Optional, AsyncGenerator
+from fastapi import APIRouter, HTTPException, status, Depends, BackgroundTasks, UploadFile, File, Form
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from app.models.schemas import MessageResponse
 from app.ad_agent.interfaces.ad_schemas import (
     AdRequest,
@@ -15,6 +19,17 @@ import os
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/ad-agent", tags=["AI Ad Agent"])
+
+
+# Simple schema for streaming endpoint
+class StreamAdRequest(BaseModel):
+    """Simplified request for streaming ad creation."""
+    script: str = Field(..., description="The dialogue script for the ad")
+    character_image: str = Field(..., description="Base64-encoded character image (data:image/png;base64,...)")
+    character_name: Optional[str] = Field("character", description="Name of the character")
+    voice_id: Optional[str] = Field(None, description="ElevenLabs voice ID (optional, uses default if not provided)")
+    aspect_ratio: Optional[str] = Field("16:9", description="Video aspect ratio")
+    resolution: Optional[str] = Field("720p", description="Video resolution")
 
 
 # Initialize pipeline (will be created per request to support different settings and user keys)
@@ -90,16 +105,19 @@ async def create_ad(
     try:
         logger.info(f"Creating ad for user {user_id}, campaign {request.campaign_id}")
 
-        # Validate campaign exists
-        from app.database import get_db
-        db = get_db()
-        campaign = await db.get_campaign(request.campaign_id, user_id)
+        # Validate campaign exists (skip if Firestore not available)
+        try:
+            from app.database import get_db
+            db = get_db()
+            campaign = await db.get_campaign(request.campaign_id, user_id)
 
-        if not campaign:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Campaign not found",
-            )
+            if not campaign:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Campaign not found",
+                )
+        except Exception as e:
+            logger.warning(f"Skipping campaign validation (Firestore not available): {e}")
 
         # Create pipeline with user-specific API keys and verification settings
         pipeline = get_pipeline(
@@ -153,7 +171,7 @@ async def get_ad_job_status(
     Returns progress, current step, and final video URL when complete.
     """
     try:
-        pipeline = get_pipeline()
+        pipeline = get_pipeline(user_id=user_id)
         job = await pipeline.get_job_status(job_id, user_id)
 
         if not job:
@@ -196,7 +214,7 @@ async def download_ad_video(
     try:
         from fastapi.responses import RedirectResponse
 
-        pipeline = get_pipeline()
+        pipeline = get_pipeline(user_id=user_id)
         job = await pipeline.get_job_status(job_id, user_id)
 
         if not job:
@@ -284,3 +302,265 @@ async def ad_agent_health():
         "elevenlabs_configured": bool(elevenlabs_key),
         "unified_api_url": settings.UNIFIED_API_BASE_URL,
     }
+
+
+@router.post("/create-stream")
+async def create_ad_stream(
+    request: StreamAdRequest,
+    user_id: str = Depends(get_current_user_id),
+):
+    """
+    Create an AI-generated video ad with real-time progress updates.
+
+    This endpoint streams progress updates as Server-Sent Events (SSE) and returns
+    the final video URL when complete.
+
+    **Input:**
+    - script: Your ad script (what the character will say)
+    - character_image: Base64-encoded avatar image
+    - character_name: Name of the character (optional)
+    - voice_id: ElevenLabs voice ID (optional, uses default if not provided)
+
+    **Progress Events:**
+    - step1: Generating prompts
+    - step2: Generating clip X/Y
+    - step3: Merging videos
+    - step4: Enhancing voice
+    - step5: Finalizing
+    - complete: Final video URL
+
+    **Example:**
+    ```
+    curl -N -X POST http://localhost:8001/api/ad-agent/create-stream \
+      -H "Authorization: Bearer TOKEN" \
+      -H "Content-Type: application/json" \
+      -d '{
+        "script": "Your ad script here...",
+        "character_image": "data:image/png;base64,..."
+      }'
+    ```
+    """
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        """Generate Server-Sent Events with progress updates."""
+        try:
+            # Convert to full AdRequest
+            ad_request = AdRequest(
+                campaign_id="stream-ad",  # Auto-generated campaign
+                script=request.script,
+                character_image=request.character_image,
+                character_name=request.character_name,
+                voice_id=request.voice_id,
+                aspect_ratio=request.aspect_ratio,
+                resolution=request.resolution,
+            )
+
+            # Progress callback queue
+            progress_queue = asyncio.Queue()
+
+            async def progress_callback(event: str, data: dict):
+                """Callback to emit progress events."""
+                await progress_queue.put({"event": event, "data": data})
+
+            # Create pipeline with progress callback
+            pipeline = get_pipeline(user_id=user_id)
+            pipeline.progress_callback = progress_callback
+
+            # Start ad creation in background
+            async def create_ad_task():
+                try:
+                    job = await pipeline.create_ad(ad_request, user_id)
+                    await progress_queue.put({"event": "complete", "data": {
+                        "status": job.status.value if hasattr(job.status, 'value') else job.status,
+                        "final_video_url": job.final_video_url,
+                        "job_id": job.job_id,
+                    }})
+                except Exception as e:
+                    logger.error(f"Ad creation failed: {e}", exc_info=True)
+                    await progress_queue.put({"event": "error", "data": {
+                        "message": str(e)
+                    }})
+                finally:
+                    await progress_queue.put(None)  # Signal completion
+
+            # Start background task
+            task = asyncio.create_task(create_ad_task())
+
+            # Stream events
+            while True:
+                event = await progress_queue.get()
+                if event is None:  # End signal
+                    break
+
+                # Format as SSE
+                event_name = event["event"]
+                event_data = json.dumps(event["data"])
+
+                yield f"event: {event_name}\n"
+                yield f"data: {event_data}\n\n"
+
+            # Wait for task to complete
+            await task
+
+        except Exception as e:
+            logger.error(f"Streaming ad creation failed: {e}", exc_info=True)
+            error_data = json.dumps({"message": str(e)})
+            yield f"event: error\n"
+            yield f"data: {error_data}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        }
+    )
+
+
+@router.post("/create-stream-upload")
+async def create_ad_stream_with_upload(
+    script: str = Form(..., description="The dialogue script for the ad"),
+    avatar: UploadFile = File(..., description="Avatar image file (PNG, JPG)"),
+    character_name: Optional[str] = Form("character", description="Name of the character"),
+    voice_id: Optional[str] = Form(None, description="ElevenLabs voice ID"),
+    aspect_ratio: Optional[str] = Form("16:9", description="Video aspect ratio"),
+    resolution: Optional[str] = Form("720p", description="Video resolution"),
+    user_id: str = Depends(get_current_user_id),
+):
+    """
+    Create an AI-generated video ad with real-time progress updates (FILE UPLOAD VERSION).
+
+    **This endpoint accepts multipart/form-data with file upload - much easier than base64!**
+
+    **Input:**
+    - script: Your ad script (form field)
+    - avatar: Avatar image file (PNG, JPG - file upload)
+    - character_name: Name of the character (optional, form field)
+    - voice_id: ElevenLabs voice ID (optional, form field)
+    - aspect_ratio: Video aspect ratio (optional, form field)
+    - resolution: Video resolution (optional, form field)
+
+    **Progress Events:**
+    Same as /create-stream endpoint - streams SSE events.
+
+    **Example (Python with httpx):**
+    ```python
+    files = {"avatar": open("Avatar.png", "rb")}
+    data = {
+        "script": "Your ad script...",
+        "character_name": "Heather"
+    }
+    async with httpx.AsyncClient() as client:
+        async with client.stream(
+            "POST",
+            "http://localhost:8001/api/ad-agent/create-stream-upload",
+            files=files,
+            data=data,
+            headers={"Authorization": f"Bearer {token}"}
+        ) as response:
+            # Process SSE events...
+    ```
+
+    **Example (cURL):**
+    ```bash
+    curl -N -X POST http://localhost:8001/api/ad-agent/create-stream-upload \
+      -H "Authorization: Bearer TOKEN" \
+      -F "script=Your ad script here..." \
+      -F "avatar=@Avatar.png" \
+      -F "character_name=Heather"
+    ```
+    """
+    import base64
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        """Generate Server-Sent Events with progress updates."""
+        try:
+            # Read uploaded file and convert to base64
+            avatar_bytes = await avatar.read()
+            avatar_b64 = base64.b64encode(avatar_bytes).decode('utf-8')
+
+            # Determine image format from filename or content type
+            content_type = avatar.content_type or "image/png"
+            if "jpeg" in content_type or "jpg" in content_type:
+                mime = "image/jpeg"
+            else:
+                mime = "image/png"
+
+            avatar_data_uri = f"data:{mime};base64,{avatar_b64}"
+
+            # Convert to full AdRequest
+            ad_request = AdRequest(
+                campaign_id="stream-ad-upload",
+                script=script,
+                character_image=avatar_data_uri,
+                character_name=character_name,
+                voice_id=voice_id,
+                aspect_ratio=aspect_ratio,
+                resolution=resolution,
+            )
+
+            # Progress callback queue
+            progress_queue = asyncio.Queue()
+
+            async def progress_callback(event: str, data: dict):
+                """Callback to emit progress events."""
+                await progress_queue.put({"event": event, "data": data})
+
+            # Create pipeline with progress callback
+            pipeline = get_pipeline(user_id=user_id)
+            pipeline.progress_callback = progress_callback
+
+            # Start ad creation in background
+            async def create_ad_task():
+                try:
+                    job = await pipeline.create_ad(ad_request, user_id)
+                    await progress_queue.put({"event": "complete", "data": {
+                        "status": job.status.value if hasattr(job.status, 'value') else job.status,
+                        "final_video_url": job.final_video_url,
+                        "job_id": job.job_id,
+                    }})
+                except Exception as e:
+                    logger.error(f"Ad creation failed: {e}", exc_info=True)
+                    await progress_queue.put({"event": "error", "data": {
+                        "message": str(e)
+                    }})
+                finally:
+                    await progress_queue.put(None)  # Signal completion
+
+            # Start background task
+            task = asyncio.create_task(create_ad_task())
+
+            # Stream events
+            while True:
+                event = await progress_queue.get()
+                if event is None:  # End signal
+                    break
+
+                # Format as SSE
+                event_name = event["event"]
+                event_data = json.dumps(event["data"])
+
+                yield f"event: {event_name}\n"
+                yield f"data: {event_data}\n\n"
+
+            # Wait for task to complete
+            await task
+
+        except Exception as e:
+            logger.error(f"Streaming ad creation failed: {e}", exc_info=True)
+            error_data = json.dumps({"message": str(e)})
+            yield f"event: error\n"
+            yield f"data: {error_data}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+ 

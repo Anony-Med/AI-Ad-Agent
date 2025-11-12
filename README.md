@@ -1,21 +1,26 @@
 # AI Ad Agent
 
-**Automated AI-powered video ad creation system** that transforms scripts into professional video ads with clip verification.
+**Automated AI-powered video ad creation system** that transforms scripts into professional video ads using Direct Veo API.
 
 ## 🎯 What Does It Do?
 
-Submit a script and character image → Get a complete, polished video ad with voice, music, and effects.
+Submit a script and character image → Get a complete, polished video ad with natural lip-sync and voice.
 
-**Fully automated 9-step workflow:**
-1. ✅ Generates optimized Veo 3.1 prompts + script segments (Gemini)
-2. ✅ Creates 7-second video clips with character consistency (Veo 3.1)
-3. ✅ **Verifies clips match script content (Gemini Vision)** 🆕
-4. ✅ Merges clips seamlessly (ffmpeg)
-5. ✅ Provides creative enhancement suggestions (Gemini)
-6. ✅ Generates voiceover for entire script (ElevenLabs - your chosen voice)
-7. ✅ Replaces video audio with consistent voiceover (ffmpeg)
-8. ✅ Adds background music and sound effects (ElevenLabs)
-9. ✅ Exports and uploads final video (GCS)
+**Simplified 5-step Veo-First workflow:**
+1. ✅ Generates **DYNAMIC** Veo prompts with movement and actions (Gemini 2.0 Flash)
+2. ✅ Creates video clips WITH built-in audio using Direct Veo API (Veo 3.1 image-to-video)
+3. ✅ Merges clips with frame-to-frame continuity (ffmpeg)
+4. ✅ Enhances voice quality with ElevenLabs Voice Changer (Speech-to-Speech API)
+5. ✅ Exports and uploads final video with signed URLs (GCS)
+
+**Key Features (Latest):**
+- 🎬 **Dynamic Movement** - Characters move, gesture, and demonstrate (not static!)
+- 🎯 **Exact Script Usage** - Uses your exact words without modification
+- 🔄 **Frame-to-Frame Continuity** - Each clip starts from previous clip's last frame
+- 🛡️ **Auto-Retry on Failure** - Falls back to original avatar if content policy fails
+- 🔧 **Script Normalization** - Auto-converts special characters (—, "", '') to prevent gibberish
+- 📊 **Real-Time Progress** - Step-by-step monitoring with detailed logs
+- 💾 **GCS Checkpoint System** - All clips saved to cloud storage for resume/replay
 
 ## 📊 Tech Stack
 
@@ -23,11 +28,11 @@ Submit a script and character image → Get a complete, polished video ad with v
 - **Authentication:** Unified API (JWT tokens)
 - **Database:** Google Cloud Firestore
 - **Storage:** Google Cloud Storage + Secret Manager
-- **Video Generation:** Veo 3.1 via [Unified API](https://unified-api-interface-994684344365.europe-west1.run.app)
-- **Text/Vision:** Google Gemini 2.0 Flash (direct API)
-- **Audio Generation:** ElevenLabs (direct API)
+- **Video Generation:** Veo 3.1 **Direct API** (image-to-video with lip-sync) 🆕
+- **Text Generation:** Google Gemini 2.0 Flash (direct API)
+- **Voice Enhancement:** ElevenLabs Voice Changer (direct API) 🆕
 - **Video Processing:** ffmpeg
-- **Architecture:** ViMax-style multi-agent pipeline
+- **Architecture:** Multi-agent pipeline with sequential clip processing
 
 ## 🚀 Quick Start
 
@@ -44,7 +49,10 @@ sudo apt-get install ffmpeg
 # macOS
 brew install ffmpeg
 
-# Windows
+# Windows (Conda recommended)
+conda install -c conda-forge ffmpeg
+
+# OR Windows (Chocolatey)
 choco install ffmpeg
 ```
 
@@ -59,57 +67,72 @@ pip install -r requirements.txt
 
 ### 3. Configuration
 
-#### Option A: Local Development (Using .env file)
+#### GCP Authentication (First Time Setup)
+
+```bash
+# Authenticate with GCP
+gcloud auth application-default login
+gcloud config set project sound-invention-432122-m5
+```
+
+#### Configure API Keys in Secret Manager
+
+All API keys are stored in GCP Secret Manager (shared with Unified API infrastructure):
+
+```bash
+# 1. Gemini API Key (for prompts, suggestions, verification)
+echo -n "YOUR_GEMINI_KEY" | gcloud secrets create unified_api_google_api_key \
+  --project=sound-invention-432122-m5 --replication-policy="automatic" --data-file=-
+
+# 2. ElevenLabs API Key (for voiceover, music, SFX)
+echo -n "YOUR_ELEVENLABS_KEY" | gcloud secrets create eleven-labs-api-key \
+  --project=sound-invention-432122-m5 --replication-policy="automatic" --data-file=-
+
+# 3. GCS Service Account (for signed URLs)
+# This should already exist from Unified API setup
+# If not, see SETUP_COMPLETE.md
+
+# 4. Unified API Credentials (for Veo video generation)
+# Add your Unified API login credentials
+echo -n "your-email@example.com" | gcloud secrets create ai_ad_agent_unified_api_email \
+  --project=sound-invention-432122-m5 --replication-policy="automatic" --data-file=-
+
+echo -n "your-password" | gcloud secrets create ai_ad_agent_unified_api_password \
+  --project=sound-invention-432122-m5 --replication-policy="automatic" --data-file=-
+```
+
+**Get API Keys:**
+- **Gemini:** https://aistudio.google.com/app/apikey
+- **ElevenLabs:** https://elevenlabs.io/ → Profile → API Keys
+- **Unified API:** Use your existing Unified API account credentials
+
+**Alternative:** You can also use the quick setup script:
+```bash
+# See docs/QUICK_AUTH_SETUP.md for instructions
+```
+
+#### Backend Configuration
 
 Create `backend/.env`:
 
 ```env
 # GCP Configuration
 GCP_PROJECT_ID=sound-invention-432122-m5
-GCS_BUCKET_NAME=your-bucket-name
+FIRESTORE_DATABASE=ai-ad-agent
+GCS_BUCKET_NAME=ai-ad-agent-videos
 
-# Required API Keys (for local dev only)
-GEMINI_API_KEY=your_gemini_api_key_here
-ELEVENLABS_API_KEY=your_elevenlabs_api_key_here
-
-# Unified API (already configured)
+# Unified API
 UNIFIED_API_BASE_URL=https://unified-api-interface-994684344365.europe-west1.run.app
 
-# Optional
-DEBUG=True
+# Secret Manager (recommended for production)
+USE_SECRET_MANAGER=true
+
+# Optional - Local Development Only
+DEBUG=true
 LOG_LEVEL=INFO
 ```
 
-**Get API Keys:**
-- **Gemini:** https://makersuite.google.com/app/apikey
-- **ElevenLabs:** https://elevenlabs.io/ → Profile → API Keys
-
-#### Option B: Production (Using Secret Manager)
-
-For production deployment, use GCP Secret Manager:
-
-```bash
-# Set project
-export PROJECT_ID="sound-invention-432122-m5"
-
-# Create global secrets
-echo -n "YOUR_GEMINI_KEY" | gcloud secrets create ai_ad_agent_gemini_api_key \
-  --project=$PROJECT_ID --replication-policy="automatic" --data-file=-
-
-echo -n "YOUR_ELEVENLABS_KEY" | gcloud secrets create ai_ad_agent_elevenlabs_api_key \
-  --project=$PROJECT_ID --replication-policy="automatic" --data-file=-
-
-# Grant service account access
-export SA="994684344365-compute@developer.gserviceaccount.com"
-
-gcloud secrets add-iam-policy-binding ai_ad_agent_gemini_api_key \
-  --member="serviceAccount:${SA}" --role="roles/secretmanager.secretAccessor"
-
-gcloud secrets add-iam-policy-binding ai_ad_agent_elevenlabs_api_key \
-  --member="serviceAccount:${SA}" --role="roles/secretmanager.secretAccessor"
-```
-
-See [docs/SECRET_MANAGER_SETUP.md](./docs/SECRET_MANAGER_SETUP.md) for detailed setup instructions.
+See [docs/SETUP_COMPLETE.md](./docs/SETUP_COMPLETE.md) for detailed setup documentation.
 
 ### 4. Run the Application
 
@@ -122,9 +145,11 @@ python main.py
 # Health Check: http://localhost:8000/api/ad-agent/health
 ```
 
-## 🧪 Testing Guide
+## 🧪 Testing
 
-### Step 1: Verify Installation
+For comprehensive testing instructions, see **[docs/TEST_README.md](./docs/TEST_README.md)**.
+
+### Quick Health Check
 
 ```bash
 # Test health endpoint
@@ -139,143 +164,272 @@ curl http://localhost:8000/api/ad-agent/health
 # }
 ```
 
-### Step 2: Register/Login
+For complete testing steps including authentication, campaign creation, and ad generation, see **[docs/TEST_README.md](./docs/TEST_README.md)**.
+
+## 🎬 How to Create Your First Ad
+
+### Step-by-Step Guide
+
+#### 1. Prepare Your Assets
+
+**Avatar Image:**
+- Use a clear image of your character (PNG, JPG)
+- Recommended: 512x512 or 1024x1024 resolution
+- Place in project root or note the full path
+- Example: `C:\Users\shrey\Desktop\projects\ai ad agent\Avatar.png`
+
+**Script:**
+- Write your ad script (what your character will say)
+- Keep it natural and conversational
+- Example length: 30-60 seconds of speech (~100-200 words)
+- Avoid special characters (em dashes —, curly quotes "", etc.)
+
+#### 2. Option A: Using the Test Script (Easiest)
+
+**Step 1:** Edit `run_ad.py` in the project root:
+
+```python
+# 1. UPDATE SCRIPT - Replace with your own script
+script = """
+Your custom script here.
+Write what you want the character to say.
+Each paragraph will become a video segment.
+"""
+
+# 2. UPDATE AVATAR PATH - Point to your avatar image
+avatar_path = r"C:\path\to\your\Avatar.png"
+
+# 3. OPTIONAL: Customize voice
+# Leave as None to use default "Heather Bryant" voice
+# Or specify voice_id from ElevenLabs
+voice_id = None  # or "voice_id_here"
+
+# 4. OPTIONAL: Customize settings
+aspect_ratio = "16:9"  # or "9:16" for vertical
+resolution = "720p"    # or "1080p"
+```
+
+**Step 2:** Start the backend server:
 
 ```bash
-# Register a new user
-curl -X POST http://localhost:8000/api/auth/register \
+cd backend
+python main.py
+# Server starts at http://localhost:8001
+```
+
+**Step 3:** Run the test script (in a new terminal):
+
+```bash
+python run_ad.py
+```
+
+**Step 4:** Monitor the progress:
+
+The script will show:
+- Job ID
+- Step-by-step progress (1/5 → 2/5 → ... → 5/5)
+- Status updates
+- Final video URL when complete
+
+**Step 5:** Get your video:
+
+When complete, you'll see:
+```
+✅ Ad creation COMPLETED!
+📹 Final Video: https://storage.googleapis.com/ai-ad-agent-videos/...
+```
+
+Click the URL to download your video!
+
+#### 3. Option B: Using API Directly (Advanced)
+
+**Step 1:** Convert your avatar to base64:
+
+```python
+import base64
+
+# Read your avatar image
+with open(r"C:\path\to\your\Avatar.png", "rb") as f:
+    avatar_bytes = f.read()
+
+# Convert to base64
+avatar_b64 = base64.b64encode(avatar_bytes).decode('utf-8')
+
+# Add data URI prefix
+avatar_data_uri = f"data:image/png;base64,{avatar_b64}"
+
+print(f"Avatar ready: {len(avatar_b64)} characters")
+```
+
+**Step 2:** Login to get authentication token:
+
+```bash
+curl -X POST http://localhost:8001/api/auth/login \
   -H "Content-Type: application/json" \
+  -d '{"email":"ad_agent","password":"agent1234"}'
+
+# Save the "access_token" from response
+```
+
+**Step 3:** Create your ad:
+
+```bash
+curl -X POST http://localhost:8001/api/ad-agent/create \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE" \
   -d '{
-    "email": "test@example.com",
-    "password": "testpass123",
-    "name": "Test User"
+    "campaign_id": "my-campaign",
+    "script": "Your ad script here. What your character will say.",
+    "character_image": "data:image/png;base64,YOUR_BASE64_HERE",
+    "character_name": "Your Character Name",
+    "voice_id": null,
+    "aspect_ratio": "16:9",
+    "resolution": "720p"
   }'
 
-# Or login with existing user
-curl -X POST http://localhost:8000/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{
-    "email": "test@example.com",
-    "password": "testpass123"
-  }'
-
-# Save the access token from response
-export TOKEN="your_access_token_here"
+# Save the "job_id" from response
 ```
 
-### Step 3: Create a Campaign
+**Step 4:** Check job status:
 
 ```bash
-# Create a campaign
-curl -X POST http://localhost:8000/api/campaigns \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Test Campaign",
-    "platform": "instagram",
-    "ad_type": "video",
-    "aspect_ratio": "16:9"
-  }'
-
-# Save the campaign_id from response
-export CAMPAIGN_ID="campaign_id_from_response"
+curl http://localhost:8001/api/ad-agent/jobs/YOUR_JOB_ID \
+  -H "Authorization: Bearer YOUR_TOKEN_HERE"
 ```
 
-### Step 4: Prepare Character Image
+**Step 5:** Download your video:
 
-```bash
-# Encode your character image to base64
-# macOS/Linux:
-export CHARACTER_IMAGE=$(base64 -i your_character.jpg)
+When status is "completed", use the `final_video_url` from the response.
 
-# Windows (PowerShell):
-# $CHARACTER_IMAGE = [Convert]::ToBase64String([IO.File]::ReadAllBytes("your_character.jpg"))
+### 📝 Tips for Best Results
 
-# Or use a small test image URL
-# You can download: https://i.imgur.com/example.jpg
+**Script Writing:**
+- ✅ **Use plain text only** - Avoid fancy quotes, em dashes, special characters
+- ✅ **Natural flow** - Write like you're speaking, not reading
+- ✅ **Break into segments** - Each paragraph becomes a video segment
+- ✅ **Action hints** - Mention what to show ("at the house", "pointing to features")
+- ❌ **Avoid** - Technical jargon, overly complex sentences, special symbols
+
+**Avatar Image:**
+- ✅ **Clear subject** - Character should be clearly visible and centered
+- ✅ **Good lighting** - Well-lit image without harsh shadows
+- ✅ **Neutral background** - Less distraction, better compositing
+- ✅ **Professional quality** - Higher resolution = better results
+- ❌ **Avoid** - Blurry images, busy backgrounds, multiple people
+
+**Example Good Script:**
+```
+Tired of dealing with property repairs after every storm?
+
+Hi, I'm Sarah with Quick Home Solutions - helping homeowners sell as-is.
+
+No repairs needed. No waiting months. No stress.
+
+Whether you're relocating, downsizing, or just ready for a change - you deserve a simple process.
+
+Call us today and get a fair cash offer in 24 hours.
 ```
 
-### Step 5: Create Your First Ad
+### 🎯 What Happens During Execution
 
+When you run `python run_ad.py`, the system goes through 5 steps:
+
+**Step 1: Generating Prompts (10-30 seconds)**
+- Gemini AI analyzes your script
+- Creates dynamic video prompts with movement and actions
+- Segments script into clips (~7 seconds each)
+- Example: "walking toward camera", "gesturing at house"
+
+**Step 2: Generating Videos (3-5 minutes)**
+- Veo 3.1 generates video clips with lip-sync
+- Uses your avatar image as starting point
+- Each clip continues from the previous one (frame-to-frame continuity)
+- Character speaks your script with natural movements
+
+**Step 3: Merging Videos (10-30 seconds)**
+- All clips are combined into one seamless video
+- Smooth transitions between segments
+- No gaps or cuts
+
+**Step 4: Voice Enhancement (30-60 seconds)**
+- ElevenLabs enhances the voice quality
+- Applies professional voice (default: "Heather Bryant")
+- Replaces audio track in merged video
+
+**Step 5: Finalize (10-20 seconds)**
+- Uploads final video to Google Cloud Storage
+- Generates signed URL (valid for 7 days)
+- Creates asset record in database
+
+**Total Time: ~4-6 minutes**
+
+### ⚠️ Common Issues & Solutions
+
+**Issue:** "Unknown encoder 'libmp3lame'"
 ```bash
-# Create ad with full workflow
-curl -X POST http://localhost:8000/api/ad-agent/create \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"campaign_id\": \"$CAMPAIGN_ID\",
-    \"script\": \"Looking for your dream home? I specialize in luxury properties. Let me help you find the perfect place.\",
-    \"character_image\": \"$CHARACTER_IMAGE\",
-    \"character_name\": \"Heather\",
-    \"voice_id\": \"pNInz6obpgDQGcFmaJgB\",
-    \"background_music_prompt\": \"upbeat inspiring corporate music\",
-    \"add_sound_effects\": true,
-    \"aspect_ratio\": \"16:9\",
-    \"resolution\": \"1080p\",
-    \"enable_verification\": true,
-    \"verification_threshold\": 0.6
-  }"
+# Solution: Install ffmpeg
+# Windows (Conda):
+conda install -c conda-forge ffmpeg
 
-# Save the job_id from response
-export JOB_ID="job_id_from_response"
-```
+# Windows (Chocolatey):
+choco install ffmpeg
 
-### Step 6: Monitor Progress
-
-```bash
-# Check job status
-curl -s http://localhost:8000/api/ad-agent/jobs/$JOB_ID \
-  -H "Authorization: Bearer $TOKEN" | jq
-
-# Watch progress in real-time (requires jq and watch)
-watch -n 10 "curl -s http://localhost:8000/api/ad-agent/jobs/$JOB_ID -H 'Authorization: Bearer $TOKEN' | jq '.status, .progress, .current_step'"
-
-# Or manually check every 30 seconds
-while true; do
-  curl -s http://localhost:8000/api/ad-agent/jobs/$JOB_ID \
-    -H "Authorization: Bearer $TOKEN" | jq '.status, .progress, .current_step'
-  sleep 30
-done
-```
-
-**Status progression:**
-- `pending` → `generating_prompts` → `generating_videos` → `verifying_clips` → `merging_videos` → `getting_suggestions` → `enhancing_voice` → `adding_audio` → `finalizing` → `completed`
-
-### Step 7: Download Final Video
-
-```bash
-# Once status is "completed", download the video
-curl http://localhost:8000/api/ad-agent/jobs/$JOB_ID/download \
-  -H "Authorization: Bearer $TOKEN" \
-  -L -o my_ad.mp4
-
-# Play the video
-# macOS:
-open my_ad.mp4
+# Mac:
+brew install ffmpeg
 
 # Linux:
-xdg-open my_ad.mp4
-
-# Windows:
-start my_ad.mp4
+sudo apt-get install ffmpeg
 ```
 
-### Step 8: Test Prompt Generation Only
+**Issue:** "Clip generation failed due to content policy"
+- **Why:** Veo's safety filter rejected the frame
+- **Solution:** System automatically retries with original avatar
+- **If persists:** Try a different avatar image with neutral background
+
+**Issue:** "Voice 'Heather Bryant' not found"
+- **Why:** Voice not available in your ElevenLabs account
+- **Solution:**
+  1. Use `voice_id=None` to use default voice
+  2. Or get voice ID from ElevenLabs and use `voice_id="your_voice_id"`
+
+**Issue:** "Script has gibberish speech"
+- **Why:** Special characters (—, "", '') causing encoding issues
+- **Solution:** Use plain text only (-, ", ')
+- **Auto-fixed:** System now normalizes scripts automatically
+
+**Issue:** "Character doesn't move/stays still"
+- **Why:** Prompts not emphasizing movement
+- **Fixed:** System now generates dynamic prompts with action words
+
+### Test Scripts
+
+The `tests/` folder contains helper scripts for testing:
 
 ```bash
-# Test just the prompt generation (no video creation)
-curl -X POST http://localhost:8000/api/ad-agent/test/prompts \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "script": "Looking for your dream home? I can help you find it.",
-    "character_name": "Heather"
-  }'
+# Create a test ad
+python tests/create_test_ad.py
 
-# Response shows generated Veo prompts and script segments
+# Monitor ad creation progress
+python tests/monitor_progress.py
+
+# Setup Unified API authentication
+python tests/setup_unified_api_auth.py
+
+# Install ffmpeg (Windows)
+python tests/install_ffmpeg.py
+
+# Create service account for GCS
+python tests/create_service_account.py
 ```
 
 ## 📖 Documentation
+
+### Getting Started
+
+- **[docs/TEST_README.md](./docs/TEST_README.md)** - Step-by-step testing guide 🆕
+- **[docs/SETUP_COMPLETE.md](./docs/SETUP_COMPLETE.md)** - Setup status and configuration
+- **[docs/QUICK_AUTH_SETUP.md](./docs/QUICK_AUTH_SETUP.md)** - Quick authentication setup
+- **[docs/setup_local_dev.md](./docs/setup_local_dev.md)** - Local development setup
 
 ### Core Documentation
 
@@ -291,8 +445,11 @@ curl -X POST http://localhost:8000/api/ad-agent/test/prompts \
 
 ### Feature Documentation
 
+- **[docs/AUDIO_FIRST_WORKFLOW.md](./docs/AUDIO_FIRST_WORKFLOW.md)** - Audio-first workflow details 🆕
+- **[docs/LOGO_OVERLAY_FEATURE.md](./docs/LOGO_OVERLAY_FEATURE.md)** - Logo overlay guide 🆕
 - **[docs/CLIP_VERIFICATION.md](./docs/CLIP_VERIFICATION.md)** - Clip verification system
 - **[docs/VOICE_WORKFLOW_FIX.md](./docs/VOICE_WORKFLOW_FIX.md)** - Voice workflow details
+- **[docs/CHECKPOINT_RESUME_IMPLEMENTATION.md](./docs/CHECKPOINT_RESUME_IMPLEMENTATION.md)** - Checkpoint/resume system 🆕
 
 ### Reference
 
@@ -312,40 +469,75 @@ ai-ad-agent/
 │   ├── app/
 │   │   ├── ad_agent/                # AI Ad Agent module
 │   │   │   ├── agents/              # Specialized agents
-│   │   │   │   ├── prompt_generator.py    # Step 1: Generate prompts
-│   │   │   │   ├── video_generator.py     # Step 2: Generate videos
-│   │   │   │   ├── clip_verifier.py       # Step 3: Verify clips 🆕
-│   │   │   │   ├── creative_advisor.py    # Step 5: Suggestions
-│   │   │   │   ├── audio_compositor.py    # Step 6-8: Audio
-│   │   │   │   └── video_compositor.py    # Step 4,7,9: Video
+│   │   │   │   ├── prompt_generator.py    # Gemini prompt generation (dynamic prompts) 🆕
+│   │   │   │   ├── video_generator.py     # Veo video generation (Direct API) 🆕
+│   │   │   │   ├── clip_verifier.py       # Gemini Vision verification
+│   │   │   │   ├── creative_advisor.py    # Creative suggestions
+│   │   │   │   ├── audio_compositor.py    # ElevenLabs audio (Voice Changer) 🆕
+│   │   │   │   └── video_compositor.py    # ffmpeg video processing
 │   │   │   ├── clients/             # Direct API clients
-│   │   │   │   ├── gemini_client.py       # Gemini text + vision
-│   │   │   │   └── elevenlabs_client.py   # ElevenLabs audio
+│   │   │   │   ├── gemini_client.py       # Gemini text + vision (dynamic prompts) 🆕
+│   │   │   │   └── elevenlabs_client.py   # ElevenLabs audio (Speech-to-Speech) 🆕
 │   │   │   ├── pipelines/           # Orchestration
-│   │   │   │   └── ad_creation_pipeline.py  # Main workflow
+│   │   │   │   └── ad_creation_pipeline.py  # 5-step workflow with retry logic 🆕
 │   │   │   ├── interfaces/          # Schemas
-│   │   │   │   └── ad_schemas.py
+│   │   │   │   └── ad_schemas.py          # Updated with GCS URLs
 │   │   │   └── utils/               # Video processing
-│   │   │       └── video_utils.py
+│   │   │       ├── video_utils.py         # Frame extraction, merging
+│   │   │       ├── audio_utils.py         # Audio analysis 🆕
+│   │   │       └── image_utils.py         # Image optimization 🆕
 │   │   ├── routes/                  # API endpoints
 │   │   │   ├── ad_agent.py         # AI Ad Agent routes
 │   │   │   ├── auth.py             # Authentication
 │   │   │   ├── campaigns.py        # Campaign management
 │   │   │   └── ...
 │   │   ├── database/                # Firestore & GCS
-│   │   ├── services/                # Unified API client
+│   │   │   ├── firestore_db.py     # Uses ADC (no explicit keys)
+│   │   │   └── gcs_storage.py      # GCS checkpoint/resume 🆕
+│   │   ├── services/                # External services
+│   │   │   ├── unified_api_client.py      # Unified API client
+│   │   │   └── veo_client.py              # Direct Veo API client 🆕
 │   │   ├── middleware/              # Auth middleware
 │   │   ├── models/                  # Schemas & enums
-│   │   └── secrets.py               # Secret Manager 🆕
+│   │   ├── secrets.py               # Secret Manager
+│   │   └── config.py                # App configuration
 │   ├── main.py                      # FastAPI app
 │   └── requirements.txt
 ├── docs/                            # Documentation 📁
-│   ├── IMPLEMENTATION_SUMMARY.md
-│   ├── SECRET_MANAGER_SETUP.md
-│   ├── CLIP_VERIFICATION.md
+│   ├── TEST_README.md              # Comprehensive testing guide
+│   ├── SETUP_COMPLETE.md           # Setup status
+│   ├── QUICK_AUTH_SETUP.md         # Quick auth setup
+│   ├── VEO_FIRST_WORKFLOW.md       # Veo-first workflow details 🆕
+│   ├── DIRECT_VEO_MIGRATION.md     # Direct Veo API migration 🆕
+│   ├── CHECKPOINT_RESUME_IMPLEMENTATION.md  # Checkpoint system
+│   ├── LOGO_OVERLAY_FEATURE.md     # Logo overlay guide
+│   ├── OLD_CODE_ARCHIVE.md         # Archived workflows
 │   └── ...
+├── tests/                           # Testing scripts 📁
+│   ├── create_test_ad.py           # Create test ad
+│   ├── monitor_progress.py         # Monitor job progress
+│   ├── setup_unified_api_auth.py   # Setup Unified API auth
+│   ├── install_ffmpeg.py           # Install ffmpeg (Windows)
+│   ├── create_service_account.py   # Create GCS service account
+│   └── test_setup.py               # Backend setup tests
+├── run_ad.py                        # ⭐ Quick test script (easiest way to start) 🆕
+├── create_ad_test.py                # Alternative test script
+├── Avatar.png                       # Example character image
+├── logo.png                         # Example logo image
 └── README.md                        # This file
 ```
+
+**Key Features:**
+- ✅ **Dynamic Movement Prompts** - Characters move, gesture, demonstrate (GPT-style prompts) 🆕
+- ✅ **Exact Script Adherence** - Uses your exact words without paraphrasing 🆕
+- ✅ **Frame-to-Frame Continuity** - Smooth transitions between clips 🆕
+- ✅ **Auto-Retry on Content Policy Fails** - Falls back to original avatar automatically 🆕
+- ✅ **Script Normalization** - Converts special chars (—, "", '') to prevent gibberish 🆕
+- ✅ **Direct Veo API Integration** - Perfect lip-sync from character image
+- ✅ **ElevenLabs Voice Changer** - Professional voice enhancement (Speech-to-Speech) 🆕
+- ✅ **GCS Checkpoint System** - All clips saved to cloud storage for resume/replay
+- ✅ **Character Image Optimization** - Auto-resized to 768px for Veo API compatibility
+- ✅ **Comprehensive Logging** - Rotating file logs with detailed debugging
 
 ## 🔑 API Endpoints
 
@@ -377,20 +569,18 @@ ai-ad-agent/
 
 ## 📈 Timeline
 
-Typical ad creation takes **7-14 minutes**:
+Typical ad creation takes **4-6 minutes** (simplified workflow):
 
 | Step | Duration | Description |
 |------|----------|-------------|
-| 1. Prompt Generation | 10-30s | Gemini analyzes script + creates segments |
-| 2. Video Generation | 5-10 min | Veo 3.1 generates 3 clips |
-| 3. Clip Verification | 30-60s | Gemini Vision verifies clips 🆕 |
-| 4. Video Merging | 30-60s | ffmpeg concatenation |
-| 5. Creative Suggestions | 10-20s | Gemini enhancement ideas |
-| 6. Voiceover | 30-60s | ElevenLabs TTS |
-| 7. Audio Replacement | 10-20s | ffmpeg audio swap |
-| 8. Music & SFX | 1-2 min | ElevenLabs audio generation |
-| 9. Final Upload | 30s | GCS upload |
-| **Total** | **7-14 min** | Complete workflow |
+| 1. Prompt Generation | 10-30s | Gemini generates GPT-style Veo prompts with lip-sync emphasis |
+| 2. Video Generation | 3-5 min | Veo 3.1 generates clips with built-in audio (sequential) |
+| 3. Video Merging | 10-30s | ffmpeg concatenation |
+| 4. Voice Enhancement | 30-60s | ElevenLabs Voice Changer (optional) |
+| 5. Final Upload | 10-20s | GCS upload with signed URL |
+| **Total** | **4-6 min** | Complete workflow |
+
+**Previous 10-step audio-first workflow** is still available but commented out in code for reference.
 
 ## 💰 Cost Estimate
 

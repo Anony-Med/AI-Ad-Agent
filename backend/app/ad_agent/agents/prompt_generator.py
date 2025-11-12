@@ -13,6 +13,39 @@ class PromptGeneratorAgent:
         """Initialize with Gemini client."""
         self.gemini = GeminiClient(api_key=api_key)
 
+    @staticmethod
+    def normalize_script(script: str) -> str:
+        """
+        Normalize script text to avoid character encoding issues in Veo.
+
+        Replaces special characters with ASCII equivalents to prevent
+        gibberish speech generation.
+
+        Args:
+            script: Original script text
+
+        Returns:
+            Normalized script with ASCII characters only
+        """
+        # Replace em dash with regular hyphen
+        script = script.replace("—", "-")
+        script = script.replace("–", "-")
+
+        # Replace curly quotes with straight quotes
+        script = script.replace(""", '"')
+        script = script.replace(""", '"')
+        script = script.replace("'", "'")
+        script = script.replace("'", "'")
+
+        # Replace ellipsis
+        script = script.replace("…", "...")
+
+        # Ensure UTF-8 compatibility
+        script = script.encode('ascii', 'ignore').decode('ascii')
+
+        logger.debug(f"Normalized script: {script[:100]}...")
+        return script
+
     async def generate_prompts(
         self,
         script: str,
@@ -72,6 +105,8 @@ class PromptGeneratorAgent:
         Returns:
             Tuple of (prompts, script_segments)
         """
+        # Normalize script to remove special characters that cause gibberish speech
+        script = self.normalize_script(script)
         logger.info(f"Generating Veo prompts with script segments ({len(script)} characters)")
 
         prompts, segments = await self.gemini.generate_veo_prompts_with_segments(

@@ -15,12 +15,42 @@ from app.routes import (
 )
 from app.routes.ad_agent import router as ad_agent_router
 
-# Configure logging
-logging.basicConfig(
-    level=getattr(logging, settings.LOG_LEVEL),
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+# Configure logging to both console and file
+import os
+from logging.handlers import RotatingFileHandler
+
+# Create logs directory if it doesn't exist
+log_dir = os.path.join(os.path.dirname(__file__), "..", "logs")
+os.makedirs(log_dir, exist_ok=True)
+
+# Configure logging format
+log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+log_level = getattr(logging, settings.LOG_LEVEL)
+
+# Create handlers
+console_handler = logging.StreamHandler()
+console_handler.setLevel(log_level)
+console_handler.setFormatter(logging.Formatter(log_format))
+
+# File handler with rotation (max 10MB, keep 5 backups)
+file_handler = RotatingFileHandler(
+    os.path.join(log_dir, "ai_ad_agent.log"),
+    maxBytes=10 * 1024 * 1024,  # 10MB
+    backupCount=5,
+    encoding='utf-8'
 )
+file_handler.setLevel(log_level)
+file_handler.setFormatter(logging.Formatter(log_format))
+
+# Configure root logger
+logging.basicConfig(
+    level=log_level,
+    format=log_format,
+    handlers=[console_handler, file_handler]
+)
+
 logger = logging.getLogger(__name__)
+logger.info(f"Logging to file: {os.path.join(log_dir, 'ai_ad_agent.log')}")
 
 
 @asynccontextmanager
@@ -45,15 +75,22 @@ async def lifespan(app: FastAPI):
     try:
         from app.database import get_db, get_storage
 
-        db = get_db()
-        logger.info("✅ Firestore initialized")
+        try:
+            db = get_db()
+            logger.info("✅ Firestore initialized")
+        except Exception as e:
+            logger.warning(f"⚠️ Firestore not initialized: {e}")
+            logger.warning("Continuing without Firestore (using Unified API for auth)")
 
-        storage = get_storage()
-        logger.info("✅ GCS Storage initialized")
+        try:
+            storage = get_storage()
+            logger.info("✅ GCS Storage initialized")
+        except Exception as e:
+            logger.warning(f"⚠️ GCS Storage not initialized: {e}")
 
     except Exception as e:
-        logger.error(f"❌ Failed to initialize services: {e}")
-        raise
+        logger.error(f"❌ Failed to load database module: {e}")
+        logger.warning("Continuing with limited functionality...")
 
     logger.info("🚀 Application startup complete!")
 

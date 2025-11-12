@@ -1,9 +1,11 @@
 """Google Cloud Storage operations."""
+import json
 import logging
 from typing import Optional
 from pathlib import Path
 import httpx
 from google.cloud import storage
+from google.oauth2 import service_account
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -13,9 +15,31 @@ class GCSStorage:
     """Google Cloud Storage service for asset management."""
 
     def __init__(self):
-        """Initialize GCS client."""
+        """Initialize GCS client with service account from Secret Manager."""
         try:
-            self.client = storage.Client(project=settings.GCP_PROJECT_ID)
+            # Try to load service account credentials from Secret Manager for signed URLs
+            credentials = None
+            try:
+                from app.secrets import get_secret
+                service_account_json = get_secret("gcs-service-account-key")
+
+                if service_account_json:
+                    # Parse the JSON and create credentials
+                    service_account_info = json.loads(service_account_json)
+                    credentials = service_account.Credentials.from_service_account_info(
+                        service_account_info
+                    )
+                    logger.info("✓ Loaded GCS service account credentials from Secret Manager")
+            except Exception as e:
+                logger.warning(f"Could not load service account from Secret Manager: {e}")
+                logger.info("Using default credentials (signed URLs may not work)")
+
+            # Initialize storage client with credentials if available
+            if credentials:
+                self.client = storage.Client(project=settings.GCP_PROJECT_ID, credentials=credentials)
+            else:
+                self.client = storage.Client(project=settings.GCP_PROJECT_ID)
+
             self.bucket = self.client.bucket(settings.GCS_BUCKET_NAME)
             logger.info(f"GCS initialized with bucket: {settings.GCS_BUCKET_NAME}")
         except Exception as e:
@@ -80,15 +104,28 @@ class GCSStorage:
     async def get_signed_url(
         self,
         blob_path: str,
-        expiration_minutes: int = 60,
+        expiration_days: int = 7,
     ) -> str:
-        """Generate a signed URL for temporary access."""
+        """
+        Generate a signed URL for temporary access.
+
+        Args:
+            blob_path: Path to blob in bucket
+            expiration_days: Number of days until URL expires (default: 7)
+
+        Returns:
+            Signed URL that expires after specified days
+        """
         try:
+            from datetime import timedelta
+
             blob = self.bucket.blob(blob_path)
             url = blob.generate_signed_url(
-                expiration=expiration_minutes * 60,
+                version="v4",
+                expiration=timedelta(days=expiration_days),
                 method="GET",
             )
+            logger.info(f"Generated signed URL for {blob_path} (expires in {expiration_days} days)")
             return url
         except Exception as e:
             logger.error(f"Failed to generate signed URL for {blob_path}: {e}")
@@ -109,6 +146,26 @@ class GCSStorage:
         blob = self.bucket.blob(blob_path)
         return blob.exists()
 
+    async def download_to_file(self, blob_path: str, destination_path: str) -> str:
+        """Download a blob to local file."""
+        try:
+            blob = self.bucket.blob(blob_path)
+            blob.download_to_filename(destination_path)
+            logger.info(f"Downloaded {blob_path} to {destination_path}")
+            return destination_path
+        except Exception as e:
+            logger.error(f"Failed to download blob {blob_path}: {e}")
+            raise
+
+    async def download_as_bytes(self, blob_path: str) -> bytes:
+        """Download a blob as bytes."""
+        try:
+            blob = self.bucket.blob(blob_path)
+            return blob.download_as_bytes()
+        except Exception as e:
+            logger.error(f"Failed to download blob {blob_path}: {e}")
+            raise
+
     def get_public_url(self, blob_path: str) -> str:
         """Get public URL for a blob."""
         return f"https://storage.googleapis.com/{settings.GCS_BUCKET_NAME}/{blob_path}"
@@ -124,3 +181,25 @@ def get_storage() -> GCSStorage:
     if _storage_instance is None:
         _storage_instance = GCSStorage()
     return _storage_instance
+
+
+async def upload_file_to_gcs(file_path: str, blob_name: str) -> str:
+    """
+    Upload a file to GCS and return a signed URL.
+
+    Args:
+        file_path: Local path to the file to upload
+        blob_name: Destination path in GCS bucket
+
+    Returns:
+        Signed URL for the uploaded file (7-day expiration)
+    """
+    storage = get_storage()
+
+    # Upload file
+    await storage.upload_from_file(file_path, blob_name)
+
+    # Get signed URL
+    signed_url = await storage.get_signed_url(blob_name, expiration_days=7)
+
+    return signed_url

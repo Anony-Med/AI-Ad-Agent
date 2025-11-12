@@ -4,8 +4,6 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 from google.cloud import firestore
 from google.cloud.firestore_v1 import FieldFilter
-import firebase_admin
-from firebase_admin import credentials, firestore as admin_firestore
 from app.config import settings
 from app.models.enums import JobStatus, CampaignStatus, AdType
 
@@ -18,15 +16,14 @@ class FirestoreDB:
     def __init__(self):
         """Initialize Firestore client."""
         try:
-            # Initialize Firebase Admin SDK
-            if not firebase_admin._apps:
-                cred = credentials.Certificate(settings.GOOGLE_APPLICATION_CREDENTIALS)
-                firebase_admin.initialize_app(cred, {
-                    'projectId': settings.GCP_PROJECT_ID,
-                })
-
-            self.db = admin_firestore.client()
-            logger.info("Firestore initialized successfully")
+            # Use Application Default Credentials (same pattern as Unified API)
+            # This automatically works with gcloud auth application-default login
+            database_id = getattr(settings, 'FIRESTORE_DATABASE', 'ai-ad-agent')
+            self.db = firestore.Client(
+                project=settings.GCP_PROJECT_ID,
+                database=database_id
+            )
+            logger.info(f"Firestore initialized successfully: {settings.GCP_PROJECT_ID}/{database_id}")
         except Exception as e:
             logger.error(f"Failed to initialize Firestore: {e}")
             raise

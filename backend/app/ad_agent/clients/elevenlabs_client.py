@@ -220,3 +220,72 @@ class ElevenLabsClient:
 
         logger.warning(f"Voice '{name}' not found")
         return None
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+    )
+    async def voice_changer(
+        self,
+        audio_file_path: str,
+        voice_id: str,
+        model_id: str = "eleven_english_sts_v2",
+        output_format: str = "mp3_44100_128",
+    ) -> bytes:
+        """
+        Apply voice conversion to an audio file or URL.
+
+        This is the "Speech-to-Speech" feature from ElevenLabs that takes an existing
+        audio/video file and applies a different voice to it.
+
+        Args:
+            audio_file_path: Path to audio/video file OR signed URL
+            voice_id: ElevenLabs voice ID to apply
+            model_id: Model to use for speech-to-speech conversion (default: eleven_english_sts_v2)
+            output_format: Output audio format
+
+        Returns:
+            Converted audio bytes (MP3)
+        """
+        url = f"{self.base_url}/v1/speech-to-speech/{voice_id}"
+
+        headers = {"xi-api-key": self.api_key}
+        params = {"model_id": model_id, "output_format": output_format}
+
+        # Check if input is a URL or file path
+        if audio_file_path.startswith("http://") or audio_file_path.startswith("https://"):
+            # Download from URL
+            logger.info(f"Downloading audio from URL for voice conversion...")
+            async with httpx.AsyncClient(timeout=self.timeout) as download_client:
+                download_response = await download_client.get(audio_file_path)
+                download_response.raise_for_status()
+                audio_bytes = download_response.content
+                logger.info(f"Downloaded {len(audio_bytes)} bytes from URL")
+        else:
+            # Read from local file
+            with open(audio_file_path, "rb") as f:
+                audio_bytes = f.read()
+
+        # Prepare multipart form data
+        files = {"audio": ("audio.mp4", audio_bytes, "audio/mp4")}
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            try:
+                response = await client.post(
+                    url,
+                    headers=headers,
+                    params=params,
+                    files=files,
+                )
+                response.raise_for_status()
+
+                converted_audio = response.content
+                logger.info(f"Voice conversion complete: {len(converted_audio)} bytes")
+                return converted_audio
+
+            except httpx.HTTPStatusError as e:
+                logger.error(f"ElevenLabs Voice Changer error: {e.response.status_code} - {e.response.text}")
+                raise
+            except Exception as e:
+                logger.error(f"ElevenLabs Voice Changer request failed: {e}")
+                raise

@@ -143,19 +143,20 @@ def get_user_secret(
             logger.info(f"Using Unified API secret for {provider} (user {user_id})")
             return secret
 
-        # Try alternate naming patterns
+        # Try alternate naming patterns (for compatibility with existing secrets)
         alternate_names = {
-            "elevenlabs": "eleven-labs-api-key",  # Existing secret with hyphens
-            "google": "unified_api_google_api_key",  # Alias
-            "gemini": "unified_api_google_api_key",  # Gemini uses Google key
+            "elevenlabs": ["eleven-labs-api-key", "unified_api_elevenlabs_api_key"],
+            "google": ["unified_api_google_api_key", "GOOGLE_API_KEY"],
+            "gemini": ["unified_api_google_api_key", "GOOGLE_API_KEY"],
+            "openai": ["unified_api_openai_api_key", "openai-api-key"],
         }
 
         if provider in alternate_names:
-            alternate_secret_id = alternate_names[provider]
-            secret = get_secret(alternate_secret_id)
-            if secret:
-                logger.info(f"Using alternate secret '{alternate_secret_id}' for {provider} (user {user_id})")
-                return secret
+            for alternate_secret_id in alternate_names[provider]:
+                secret = get_secret(alternate_secret_id)
+                if secret:
+                    logger.info(f"Using alternate secret '{alternate_secret_id}' for {provider} (user {user_id})")
+                    return secret
 
     logger.warning(f"No secret found for user {user_id}, provider {provider}, key_type {key_type}")
     return None

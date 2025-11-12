@@ -98,8 +98,9 @@ class UnifiedAPIClient:
                     )
                 elif not response.is_success:
                     error_data = response.json() if response.text else {}
+                    logger.error(f"Unified API error: status={response.status_code}, response={response.text[:500]}")
                     raise UnifiedAPIError(
-                        error_data.get("error", "Unknown error"),
+                        error_data.get("error", error_data.get("detail", "Unknown error")),
                         status_code=response.status_code,
                         detail=error_data,
                     )
@@ -116,7 +117,11 @@ class UnifiedAPIClient:
 
     async def login(self, email: str, password: str) -> Token:
         """Login to get JWT token."""
-        data = {"email": email, "password": password}
+        # Unified API expects username field, not email
+        # Use email as username if it looks like an email, otherwise use as-is
+        username = email.split("@")[0] if "@" in email else email
+        data = {"username": username, "password": password}
+        logger.info(f"Attempting login with username='{username}' (email parameter was='{email}')")
         response = await self._request(
             "POST",
             "/v1/auth/login",
@@ -130,9 +135,13 @@ class UnifiedAPIClient:
         self.set_token(token)
         return Token(access_token=token, token_type="bearer")
 
-    async def register(self, email: str, password: str, name: Optional[str] = None) -> Token:
+    async def register(self, email: str, password: str, name: Optional[str] = None, username: Optional[str] = None) -> Token:
         """Register a new user."""
-        data = {"email": email, "password": password}
+        data = {
+            "email": email,
+            "password": password,
+            "username": username or email.split("@")[0],  # Use email prefix as username if not provided
+        }
         if name:
             data["name"] = name
 

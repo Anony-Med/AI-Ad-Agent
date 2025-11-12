@@ -2,8 +2,9 @@
 import logging
 import os
 import tempfile
-from typing import Optional
+from typing import Optional, List, Dict
 from app.ad_agent.clients.elevenlabs_client import ElevenLabsClient
+from app.ad_agent.utils.audio_utils import AudioAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +125,199 @@ class AudioCompositorAgent:
 
         logger.info(f"Generated {len(sfx_files)}/{len(prompts)} sound effects")
         return sfx_files
+
+    async def generate_and_segment_voiceover(
+        self,
+        script_segments: List[str],
+        voice_id: Optional[str] = None,
+        voice_name: Optional[str] = "Heather Bryant",
+    ) -> List[Dict]:
+        """
+        Generate voiceover and segment it based on script segments.
+
+        This is the NEW audio-first workflow:
+        1. Generate complete voiceover for entire script
+        2. Segment the audio intelligently based on script segments
+        3. Return segment info with durations for video generation
+
+        Args:
+            script_segments: List of script text segments
+            voice_id: ElevenLabs voice ID (optional)
+            voice_name: Voice name to search for
+
+        Returns:
+            List of segment dicts with audio_path, duration, script_text, etc.
+        """
+        logger.info(f"Generating voiceover for {len(script_segments)} script segments")
+
+        # Generate complete voiceover
+        full_script = " ".join(script_segments)
+        full_voiceover_path = await self.generate_voiceover(
+            script=full_script,
+            voice_id=voice_id,
+            voice_name=voice_name,
+        )
+
+        # Segment the audio based on script segments
+        logger.info("Segmenting voiceover to match script segments")
+        audio_analyzer = AudioAnalyzer()
+        segments = audio_analyzer.segment_audio_by_script(
+            audio_path=full_voiceover_path,
+            script_segments=script_segments,
+        )
+
+        logger.info(
+            f"Generated and segmented voiceover into {len(segments)} parts. "
+            f"Durations: {[f'{s['duration']:.2f}s' for s in segments]}"
+        )
+
+        # Cleanup full voiceover file (we now have segments)
+        if os.path.exists(full_voiceover_path):
+            os.remove(full_voiceover_path)
+
+        return segments
+
+    def get_audio_duration(self, audio_path: str) -> float:
+        """
+        Get audio file duration.
+
+        Args:
+            audio_path: Path to audio file
+
+        Returns:
+            Duration in seconds
+        """
+        audio_analyzer = AudioAnalyzer()
+        return audio_analyzer.get_audio_duration(audio_path)
+
+    async def extract_audio_from_video(self, video_path: str) -> str:
+        """
+        Extract audio track from video file or URL.
+
+        Args:
+            video_path: Path to video file OR signed URL
+
+        Returns:
+            Path to extracted audio file (AAC format in .m4a container)
+        """
+        import subprocess
+        import httpx
+
+        logger.info(f"Extracting audio from video: {video_path[:100]}...")
+
+        # Create temp file for audio (use .m4a for AAC)
+        temp_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".m4a")
+        temp_audio.close()
+
+        # Check if input is URL or file path
+        temp_video = None
+        try:
+            if video_path.startswith("http://") or video_path.startswith("https://"):
+                # Download video from URL first
+                logger.info("Downloading video from URL for audio extraction...")
+                temp_video = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+                temp_video.close()
+
+                async with httpx.AsyncClient(timeout=180) as client:
+                    response = await client.get(video_path)
+                    response.raise_for_status()
+                    with open(temp_video.name, 'wb') as f:
+                        f.write(response.content)
+
+                logger.info(f"Downloaded {len(response.content)} bytes from URL")
+                input_path = temp_video.name
+            else:
+                # Use local file directly
+                input_path = video_path
+
+            # Extract audio using ffmpeg (use AAC instead of MP3)
+            cmd = [
+                "ffmpeg",
+                "-i", input_path,
+                "-vn",  # No video
+                "-acodec", "aac",  # Use AAC instead of libmp3lame
+                "-b:a", "192k",  # High quality bitrate
+                "-y",  # Overwrite
+                temp_audio.name,
+            ]
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+
+            if result.returncode != 0:
+                logger.error(f"ffmpeg extraction error: {result.stderr}")
+                raise RuntimeError(f"Audio extraction failed: {result.stderr}")
+
+            logger.info(f"Audio extracted to {temp_audio.name}")
+            return temp_audio.name
+
+        except Exception as e:
+            logger.error(f"Failed to extract audio: {e}")
+            if os.path.exists(temp_audio.name):
+                os.remove(temp_audio.name)
+            raise
+        finally:
+            # Clean up temp video if we downloaded it
+            if temp_video and os.path.exists(temp_video.name):
+                os.remove(temp_video.name)
+
+    async def replace_audio_track(self, video_path: str, audio_path: str) -> str:
+        """
+        Replace audio track in video with new audio.
+
+        Args:
+            video_path: Path to video file
+            audio_path: Path to new audio file
+
+        Returns:
+            Path to video with replaced audio
+        """
+        import subprocess
+
+        logger.info(f"Replacing audio track in video: {video_path}")
+
+        # Create temp file for output video
+        temp_video = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+        temp_video.close()
+
+        try:
+            # Replace audio using ffmpeg
+            cmd = [
+                "ffmpeg",
+                "-i", video_path,  # Input video
+                "-i", audio_path,  # Input audio
+                "-c:v", "copy",  # Copy video stream (no re-encoding)
+                "-c:a", "aac",  # Encode audio as AAC
+                "-map", "0:v:0",  # Use video from first input
+                "-map", "1:a:0",  # Use audio from second input
+                "-shortest",  # Match shortest duration
+                "-y",  # Overwrite
+                temp_video.name,
+            ]
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+
+            if result.returncode != 0:
+                logger.error(f"ffmpeg replacement error: {result.stderr}")
+                raise RuntimeError(f"Audio replacement failed: {result.stderr}")
+
+            logger.info(f"Audio replaced, output: {temp_video.name}")
+            return temp_video.name
+
+        except Exception as e:
+            logger.error(f"Failed to replace audio: {e}")
+            if os.path.exists(temp_video.name):
+                os.remove(temp_video.name)
+            raise
 
     @staticmethod
     def cleanup_temp_files(*file_paths):

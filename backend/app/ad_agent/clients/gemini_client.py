@@ -96,13 +96,18 @@ class GeminiClient:
         """
         system_instruction = """You are an expert video director specialized in creating prompts for Google Veo 3.1.
 
-Your task: Break down scripts into optimal 7-second video prompts with these requirements:
-- Each Veo 3.1 video is maximum 7 seconds
-- Include dialogue with proper lip-sync instructions
-- Describe camera angles, lighting, and scene settings
-- NO background music or sound effects (only character speaking)
-- Focus on character expressions and body language
-- Ensure visual tone matches dialogue
+Your task: Create DYNAMIC, ACTION-ORIENTED video ad prompts where a character moves, demonstrates, and shows things related to what they're saying.
+
+CRITICAL REQUIREMENTS:
+● Each Veo 3.1 video can be a maximum of 7 seconds
+● Character must be IN MOTION - walking, gesturing, pointing, demonstrating, interacting with environment
+● Actions must RELATE TO the script content (e.g., if talking about houses, show houses; if talking about features, point to them)
+● The character's lip-sync aligns with the dialogue
+● Use DYNAMIC camera movements (walking with character, panning, tracking shots)
+● Show visual elements that reinforce what's being said
+● Avoid static/stationary poses - character should be actively doing something
+● Describe camera angles, lighting, character expressions AND movements
+● Focus on natural, professional presentation with energy and purpose
 
 Output format: Return ONLY a JSON array of prompt strings, no additional text."""
 
@@ -111,16 +116,18 @@ Output format: Return ONLY a JSON array of prompt strings, no additional text.""
 
 Character: {character_name}
 
-Break this script into Veo 3.1 video prompts. Each clip should be 7 seconds max.
-Include the spoken dialogue in quotes, camera instructions, and scene description.
+Break this script into DYNAMIC Veo 3.1 video prompts. Each clip should be 7 seconds max.
 
-Example format:
+IMPORTANT: Character must be MOVING and SHOWING things related to the script, NOT standing still.
+
+Example format with MOVEMENT:
 [
-  "Medium shot of {character_name} standing in front of a modern house entrance, warm afternoon lighting. She speaks with confidence: 'Looking for your dream home?' Subtle head tilt, genuine smile. Camera slowly pushes in.",
-  "Close-up of {character_name} inside a bright, contemporary living room. She gestures naturally: 'I can help you find it.' Soft natural window light. Slight camera movement following her gesture."
+  "Medium shot of {character_name} walking toward camera along a suburban street lined with houses, warm afternoon lighting. She gestures toward the houses while speaking energetically: 'Tired of hurricanes and repairs?' Camera tracks alongside her movement. She points at a damaged roof, showing concern.",
+  "Close-up tracking shot of {character_name} walking through a bright, modern home interior. She runs her hand along a pristine countertop while saying: 'We buy houses as-is.' Camera follows her fluid movement through the space. Natural window light.",
+  "{character_name} walks up to a house's front door, camera following from behind, then she turns to face camera with a warm smile: 'No repairs needed.' She gestures broadly at the house behind her. Confident, reassuring energy."
 ]
 
-Generate the prompts now:"""
+Generate DYNAMIC prompts with movement and actions now:"""
 
         response = await self.generate_text(
             prompt=prompt,
@@ -162,36 +169,68 @@ Generate the prompts now:"""
         """
         system_instruction = """You are an expert video director specialized in creating prompts for Google Veo 3.1.
 
-Your task: Break down scripts into optimal 7-second video prompts AND extract the corresponding script text.
+Your task: Create DYNAMIC, ACTION-ORIENTED video ad prompts where a character moves, demonstrates, and shows things related to what they're saying, AND extract corresponding script segments.
+
+CRITICAL REQUIREMENTS:
+● Each Veo 3.1 video can be a maximum of 7 seconds
+● Character must be IN MOTION - walking, gesturing, pointing, demonstrating, interacting with environment
+● Actions must RELATE TO the script content (e.g., if talking about houses, show houses; if talking about features, point to them)
+● The character's lip-sync aligns with the dialogue
+● Use DYNAMIC camera movements (walking with character, panning, tracking shots)
+● Show visual elements that reinforce what's being said (scenery, setting, environment)
+● Avoid static/stationary poses - character should be actively doing something
+● Describe camera angles, lighting, character expressions AND movements
+
+STRICT SCRIPT ADHERENCE RULES:
+● Use ONLY the EXACT words from the script - do NOT add extra dialogue or paraphrase
+● Do NOT repeat words from the script in the prompt
+● Do NOT add filler words or extra speech not in the original script
+● If a segment is short, let there be SILENCE with visual action only
+● Better to have silence than to add words not in the script
+
+FORBIDDEN ELEMENTS:
+● NO text animations, captions, or on-screen text overlays in prompts
+● NO repeating script words in the visual description
+● NO going off-script or adding dialogue
 
 Output format: Return a JSON object with two arrays:
-- "prompts": Array of Veo 3.1 video prompts
-- "script_segments": Array of script text (what's spoken in each clip)
+- "prompts": Array of DYNAMIC Veo 3.1 video prompts with movement and actions (describe visuals, scenery, and actions ONLY - quote the EXACT script text separately)
+- "script_segments": Array of EXACT script text from the original script (what's spoken in each clip)
 
-Be precise - each script segment should match its prompt."""
+Be precise - use the exact script words without modification."""
 
-        prompt = f"""Script:
+        prompt = f"""Script (USE EXACT WORDS):
 "{script}"
 
 Character: {character_name}
 
 Break this script into:
-1. Veo 3.1 video prompts (camera, scene, action)
-2. Corresponding script segments (what's spoken)
+1. DYNAMIC Veo 3.1 video prompts (describe camera, scenery, setting, ACTION, MOVEMENT - but DO NOT repeat the script words in the description)
+2. Corresponding EXACT script segments (use exact words from the script above)
 
 Each clip should be 7 seconds max.
 
-Return in this JSON format:
+CRITICAL RULES:
+1. Use the EXACT WORDS from the script in script_segments - do not paraphrase or add dialogue
+2. Split the script naturally across multiple clips (cover ALL the script text)
+3. Character must be MOVING and SHOWING things related to the script
+4. Include rich scenery/environment descriptions in prompts
+5. DO NOT include text overlays, captions, or animations in prompts
+6. DO NOT repeat the script words when describing the visual scene
+7. If a segment is short, allow SILENCE with visual action only
+8. Better to have silence than add words not in the script
+
+Return in this JSON format with DYNAMIC prompts:
 {{
   "prompts": [
-    "Medium shot of {character_name} standing in front of a modern house entrance, warm afternoon lighting. She speaks with confidence: 'Looking for your dream home?' Subtle head tilt, genuine smile. Camera slowly pushes in."
+    "Medium shot of {character_name} walking toward camera along a suburban street lined with houses, warm afternoon lighting. She gestures toward the houses. Camera tracks alongside her movement. Natural, engaging energy."
   ],
   "script_segments": [
-    "Looking for your dream home?"
+    "Tired of hurricanes, repairs, or just ready for a change?"
   ]
 }}
 
-Generate now:"""
+Generate DYNAMIC prompts NOW (remember: scenery descriptions YES, text overlays NO, exact script words only, allow silence):"""
 
         response = await self.generate_text(
             prompt=prompt,

@@ -24,8 +24,8 @@ class Settings(BaseSettings):
     # Google Cloud Platform
     GCP_PROJECT_ID: str = "sound-invention-432122-m5"
     GCP_REGION: str = "europe-west1"
-    FIRESTORE_DATABASE: str = "(default)"
-    GCS_BUCKET_NAME: str
+    FIRESTORE_DATABASE: str = "ai-ad-agent"  # AI Ad Agent Firestore database
+    GCS_BUCKET_NAME: str = "ai-ad-agent-videos"  # AI Ad Agent GCS bucket
 
     # Optional: Path to service account key (for local development)
     # In production, use Workload Identity
@@ -59,6 +59,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         case_sensitive=True,
+        extra="ignore",  # Ignore extra fields in .env
     )
 
 

@@ -1,19 +1,26 @@
-"""Agent for generating videos using Unified API (Veo 3.1)."""
+"""Agent for generating videos using Direct Veo 3.1 API."""
 import logging
 import asyncio
+import base64
 from typing import List, Dict, Any, Optional
-from app.services.unified_api_client import unified_api_client, UnifiedAPIError
+from app.services.veo_client import direct_veo_client, VeoAPIError
 from app.ad_agent.interfaces.ad_schemas import VideoClip
+from app.utils.image_utils import resize_image_for_veo, get_image_info
 
 logger = logging.getLogger(__name__)
 
 
 class VideoGeneratorAgent:
-    """Generates videos using Veo 3.1 via Unified API."""
+    """Generates videos using Veo 3.1 via Direct Google API."""
 
     def __init__(self):
-        """Initialize with Unified API client."""
-        self.client = unified_api_client
+        """
+        Initialize with Direct Veo API client.
+
+        Uses Google default credentials (works with gcloud, service accounts, Cloud Run).
+        """
+        self.client = direct_veo_client
+        logger.info("VideoGeneratorAgent initialized with Direct Veo API")
 
     async def generate_video_clip(
         self,
@@ -22,23 +29,24 @@ class VideoGeneratorAgent:
         clip_number: int,
         duration: int = 7,
         aspect_ratio: str = "16:9",
-        resolution: str = "1080p",
+        resolution: str = "720p",
     ) -> VideoClip:
         """
-        Generate a single video clip using Veo 3.1.
+        Generate a single video clip using Veo 3.1 image-to-video mode.
 
         Args:
-            prompt: Veo prompt
+            prompt: Veo prompt describing the action/motion
             character_image: Base64 encoded character reference image
             clip_number: Clip number/index
             duration: Duration in seconds (4, 6, or 8 for Veo)
             aspect_ratio: Aspect ratio
-            resolution: Video resolution
+            resolution: Video resolution (720p or 1080p)
 
         Returns:
             VideoClip with job info
         """
-        logger.info(f"Generating clip {clip_number} with Veo 3.1")
+        logger.info(f"Generating clip {clip_number} with Direct Veo API")
+        logger.info(f"DEBUG VIDEO_GEN: generate_video_clip called with clip_number={clip_number}")
 
         # Adjust duration to valid Veo values
         if duration > 6:
@@ -49,43 +57,52 @@ class VideoGeneratorAgent:
             duration = 4
 
         try:
-            # Create video job via Unified API
-            video_params = {
-                "model": "veo-3.1-generate-preview",
-                "mode": "text-to-video",
-                "prompt": prompt,
-                "duration": duration,
-                "resolution": resolution,
-                "aspect_ratio": aspect_ratio,
-                "params": {
-                    "reference_images": [character_image],  # Character reference
-                },
-            }
+            # Optimize character image for Veo API
+            # Veo API has payload limits, so resize to 768px max
+            logger.info(f"Optimizing character image for clip {clip_number}...")
+            img_info = get_image_info(character_image)
+            logger.debug(f"Original image: {img_info.get('width')}x{img_info.get('height')}, {img_info.get('size_kb', 0):.1f} KB")
 
-            response = await self.client.create_video_job(**video_params)
-            job_id = response.get("job_id") or response.get("id")
+            optimized_image = resize_image_for_veo(
+                character_image,
+                max_size=768,  # Good balance of quality and size
+                quality=85,
+            )
 
-            if not job_id:
-                raise ValueError("No job_id returned from Unified API")
+            # Create video job via Direct Veo API
+            operation_id = await self.client.create_video_job(
+                prompt=prompt,
+                character_image_b64=optimized_image,
+                duration_seconds=duration,
+                aspect_ratio=aspect_ratio,
+                resolution=resolution,
+                sample_count=1,  # Generate 1 video per clip
+                generate_audio=True,
+            )
 
-            logger.info(f"Clip {clip_number} job created: {job_id}")
+            logger.info(f"Clip {clip_number} job created: {operation_id}")
 
-            return VideoClip(
+            created_clip = VideoClip(
                 clip_number=clip_number,
                 prompt=prompt,
-                veo_job_id=job_id,
+                veo_job_id=operation_id,
                 duration=duration,
                 status="queued",
             )
+            logger.info(f"DEBUG VIDEO_GEN: Created VideoClip object with clip_number={created_clip.clip_number}")
+            return created_clip
 
-        except UnifiedAPIError as e:
-            logger.error(f"Failed to create video job for clip {clip_number}: {e.message}")
+        except VeoAPIError as e:
+            error_detail = f"{e.message}"
+            if e.detail:
+                error_detail += f" | Detail: {e.detail}"
+            logger.error(f"Failed to create video job for clip {clip_number}: {error_detail}")
             return VideoClip(
                 clip_number=clip_number,
                 prompt=prompt,
                 duration=duration,
                 status="failed",
-                error=e.message,
+                error=error_detail,
             )
         except Exception as e:
             logger.error(f"Unexpected error generating clip {clip_number}: {e}")
@@ -97,6 +114,42 @@ class VideoGeneratorAgent:
                 error=str(e),
             )
 
+    async def generate_clip(
+        self,
+        prompt: str,
+        character_image: str,
+        clip_number: int,
+        script_segment: str,
+        duration: int = 7,
+        aspect_ratio: str = "16:9",
+        resolution: str = "720p",
+    ) -> VideoClip:
+        """
+        Alias for generate_video_clip with script_segment parameter.
+
+        Args:
+            prompt: Veo prompt
+            character_image: Base64 encoded character reference image
+            clip_number: Clip number/index
+            script_segment: Corresponding script text
+            duration: Duration in seconds
+            aspect_ratio: Aspect ratio
+            resolution: Video resolution
+
+        Returns:
+            VideoClip with job info
+        """
+        clip = await self.generate_video_clip(
+            prompt=prompt,
+            character_image=character_image,
+            clip_number=clip_number,
+            duration=duration,
+            aspect_ratio=aspect_ratio,
+            resolution=resolution,
+        )
+        clip.script_segment = script_segment
+        return clip
+
     async def wait_for_video_completion(
         self,
         job_id: str,
@@ -107,58 +160,45 @@ class VideoGeneratorAgent:
         Poll video job until completion.
 
         Args:
-            job_id: Video job ID
+            job_id: Video operation ID
             timeout: Max wait time in seconds
             poll_interval: Seconds between polls
 
         Returns:
-            Job result with video URL
+            Job result with video data
 
         Raises:
             TimeoutError: If job doesn't complete in time
-            UnifiedAPIError: If job fails
+            VeoAPIError: If job fails
         """
         logger.info(f"Waiting for video job {job_id} to complete")
 
-        elapsed = 0
-        while elapsed < timeout:
-            try:
-                result = await self.client.get_video_job_status(job_id)
-                status = result.get("status", "").lower()
+        try:
+            result = await self.client.wait_for_completion(
+                operation_id=job_id,
+                timeout=timeout,
+                poll_interval=poll_interval,
+            )
 
-                logger.debug(f"Job {job_id} status: {status}")
+            # Extract video data
+            videos = self.client.extract_video_urls(result)
+            if videos:
+                # Return first video as base64 string
+                logger.info(f"Video job {job_id} completed successfully")
+                return {
+                    "status": "succeeded",
+                    "video_b64": videos[0],
+                    "result": result,
+                }
+            else:
+                raise VeoAPIError("Job completed but no video generated")
 
-                if status == "succeeded" or status == "completed":
-                    # Extract video URL from artifacts
-                    artifacts = result.get("artifacts", [])
-                    if artifacts:
-                        video_url = artifacts[0].get("url")
-                        logger.info(f"Video job {job_id} completed: {video_url}")
-                        return {
-                            "status": "succeeded",
-                            "video_url": video_url,
-                            "result": result,
-                        }
-                    else:
-                        raise ValueError("No video URL in completed job")
-
-                elif status == "failed" or status == "error":
-                    error_msg = result.get("error", "Unknown error")
-                    logger.error(f"Video job {job_id} failed: {error_msg}")
-                    raise UnifiedAPIError(f"Video generation failed: {error_msg}")
-
-                # Still processing, wait and retry
-                await asyncio.sleep(poll_interval)
-                elapsed += poll_interval
-
-            except UnifiedAPIError:
-                raise
-            except Exception as e:
-                logger.error(f"Error checking job status: {e}")
-                await asyncio.sleep(poll_interval)
-                elapsed += poll_interval
-
-        raise TimeoutError(f"Video job {job_id} timed out after {timeout}s")
+        except TimeoutError as e:
+            logger.error(f"Video job {job_id} timed out: {e}")
+            raise
+        except VeoAPIError as e:
+            logger.error(f"Video job {job_id} failed: {e}")
+            raise
 
     async def generate_all_clips(
         self,
@@ -166,8 +206,9 @@ class VideoGeneratorAgent:
         character_image: str,
         duration: int = 7,
         aspect_ratio: str = "16:9",
-        resolution: str = "1080p",
+        resolution: str = "720p",
         max_concurrent: int = 3,
+        clip_number_offset: int = 0,
     ) -> List[VideoClip]:
         """
         Generate all video clips concurrently.
@@ -179,11 +220,13 @@ class VideoGeneratorAgent:
             aspect_ratio: Aspect ratio
             resolution: Resolution
             max_concurrent: Max concurrent video generation jobs
+            clip_number_offset: Starting clip number (for batch processing)
 
         Returns:
             List of VideoClip objects with job IDs
         """
         logger.info(f"Generating {len(prompts)} video clips (max {max_concurrent} concurrent)")
+        logger.info(f"DEBUG: clip_number_offset={clip_number_offset}")
 
         # Create semaphore to limit concurrency
         semaphore = asyncio.Semaphore(max_concurrent)
@@ -200,10 +243,11 @@ class VideoGeneratorAgent:
                 )
 
         # Generate all clips concurrently with limit
-        tasks = [
-            generate_with_limit(prompt, i)
-            for i, prompt in enumerate(prompts)
-        ]
+        tasks = []
+        for i, prompt in enumerate(prompts):
+            clip_num = clip_number_offset + i
+            logger.info(f"DEBUG: Creating task for clip {clip_num} (offset={clip_number_offset}, i={i})")
+            tasks.append(generate_with_limit(prompt, clip_num))
 
         clips = await asyncio.gather(*tasks)
 
@@ -225,7 +269,7 @@ class VideoGeneratorAgent:
             timeout: Max wait time per clip
 
         Returns:
-            Updated list of VideoClip objects with URLs
+            Updated list of VideoClip objects with video data
         """
         logger.info(f"Waiting for {len(clips)} video clips to complete")
 
@@ -239,7 +283,8 @@ class VideoGeneratorAgent:
                     timeout=timeout,
                 )
 
-                clip.video_url = result["video_url"]
+                # Store video as base64 in the clip
+                clip.video_b64 = result["video_b64"]
                 clip.status = "completed"
                 logger.info(f"Clip {clip.clip_number} completed")
 

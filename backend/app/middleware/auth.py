@@ -3,7 +3,6 @@ import logging
 from typing import Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from jose import JWTError, jwt
 from app.config import settings
 from app.services.unified_api_client import unified_api_client, UnifiedAPIError
 from app.models.schemas import UserInfo
@@ -16,36 +15,21 @@ security = HTTPBearer()
 async def verify_token(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> str:
-    """Verify JWT token and return user ID."""
+    """Verify JWT token via Unified API and return user ID."""
     token = credentials.credentials
 
+    # Set token for unified API client
+    unified_api_client.set_token(token)
+
     try:
-        # Decode JWT to get user ID
-        # Note: We trust the Unified API's token, so we just decode without verification
-        # The Unified API will verify it when we make requests
-        payload = jwt.decode(
-            token,
-            settings.SECRET_KEY,
-            algorithms=[settings.ALGORITHM],
-            options={"verify_signature": False},  # We'll verify through Unified API
-        )
-        user_id: str = payload.get("sub") or payload.get("user_id")
-        if user_id is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Could not validate credentials",
-            )
-
-        # Set token for unified API client
-        unified_api_client.set_token(token)
-
-        return user_id
-
-    except JWTError as e:
-        logger.error(f"JWT decode error: {e}")
+        # Verify token by fetching user info from Unified API
+        user_info = await unified_api_client.get_user_info()
+        return user_info.id
+    except UnifiedAPIError as e:
+        logger.error(f"Token verification failed: {e.message}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Could not validate credentials",
+            detail="Invalid or expired token",
         )
 
 
