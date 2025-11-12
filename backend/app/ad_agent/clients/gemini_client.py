@@ -42,7 +42,7 @@ class GeminiClient:
 
         try:
             from app.config import settings
-            blob_path = f"jobs/{self.job_id}/{filename}"
+            blob_path = f"{self.user_id}/{self.job_id}/{filename}"
 
             # Convert data to JSON string
             json_data = json.dumps(data, indent=2, ensure_ascii=False)

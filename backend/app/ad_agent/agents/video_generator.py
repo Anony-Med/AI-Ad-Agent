@@ -128,10 +128,10 @@ class VideoGeneratorAgent:
         Alias for generate_video_clip with script_segment parameter.
 
         Args:
-            prompt: Veo prompt
+            prompt: Veo prompt (visual description)
             character_image: Base64 encoded character reference image
             clip_number: Clip number/index
-            script_segment: Corresponding script text
+            script_segment: Corresponding script text (what the avatar should say)
             duration: Duration in seconds
             aspect_ratio: Aspect ratio
             resolution: Video resolution
@@ -139,8 +139,12 @@ class VideoGeneratorAgent:
         Returns:
             VideoClip with job info
         """
+        # Combine visual prompt with script for Veo
+        # This ensures the avatar speaks the EXACT script text via lip-sync
+        combined_prompt = f'{prompt} The character speaks: "{script_segment}"'
+
         clip = await self.generate_video_clip(
-            prompt=prompt,
+            prompt=combined_prompt,
             character_image=character_image,
             clip_number=clip_number,
             duration=duration,

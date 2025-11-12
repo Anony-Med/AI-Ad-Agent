@@ -696,23 +696,25 @@ class VideoProcessor:
         return output_path
 
     @staticmethod
-    def extract_last_frame(video_path: str, output_path: str) -> str:
+    def extract_last_frame(video_path: str, output_path: str, max_retries: int = 3) -> str:
         """
-        Extract the last frame from a video as an image.
+        Extract the last frame from a video as an image with retry logic.
 
         Args:
             video_path: Path to input video
             output_path: Path to save output image (e.g., frame.jpg)
+            max_retries: Maximum number of retry attempts for timeout errors
 
         Returns:
             Path to extracted frame image
 
         Raises:
-            RuntimeError: If ffmpeg fails
+            RuntimeError: If ffmpeg fails after all retries
 
         Note:
             ffmpeg availability is checked once at application startup.
             This method assumes ffmpeg is available and will raise an error if not.
+            Timeout errors will be retried up to max_retries times.
         """
         # Use ffmpeg to extract the last frame
         # -sseof -1 seeks to 1 second before end
@@ -728,19 +730,59 @@ class VideoProcessor:
             output_path,
         ]
 
-        result = subprocess.run(
-            ffmpeg_cmd,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        last_error = None
 
-        if result.returncode != 0:
-            logger.error(f"ffmpeg error extracting last frame: {result.stderr}")
-            raise RuntimeError(f"Failed to extract last frame: {result.stderr}")
+        for attempt in range(1, max_retries + 1):
+            try:
+                logger.info(f"Extracting last frame (attempt {attempt}/{max_retries})")
 
-        logger.info(f"Extracted last frame to {output_path}")
-        return output_path
+                result = subprocess.run(
+                    ffmpeg_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=60,  # Increased from 30s to handle larger videos
+                )
+
+                if result.returncode != 0:
+                    error_msg = f"FFmpeg error (exit code {result.returncode}): {result.stderr}"
+                    logger.error(error_msg)
+                    last_error = RuntimeError(error_msg)
+
+                    # Check if it's a specific error we can retry
+                    if "timeout" in result.stderr.lower() or "timed out" in result.stderr.lower():
+                        logger.warning(f"FFmpeg error appears to be timeout-related, will retry")
+                        if attempt < max_retries:
+                            continue
+                    else:
+                        # Non-timeout error, don't retry
+                        logger.error(f"Non-timeout FFmpeg error, not retrying: {result.stderr[:200]}")
+                        raise last_error
+                else:
+                    # Success!
+                    logger.info(f"✅ Extracted last frame to {output_path}")
+                    return output_path
+
+            except subprocess.TimeoutExpired as e:
+                error_msg = f"FFmpeg timeout after 60s (attempt {attempt}/{max_retries})"
+                logger.warning(error_msg)
+                last_error = RuntimeError(error_msg)
+
+                if attempt < max_retries:
+                    logger.info(f"Retrying FFmpeg frame extraction...")
+                    continue
+                else:
+                    logger.error(f"FFmpeg failed after {max_retries} attempts due to timeout")
+                    raise RuntimeError(f"Failed to extract frame after {max_retries} timeout attempts")
+
+            except Exception as e:
+                logger.error(f"Unexpected error during FFmpeg frame extraction: {e}")
+                raise RuntimeError(f"Unexpected FFmpeg error: {str(e)}")
+
+        # If we get here, all retries failed
+        if last_error:
+            raise last_error
+        else:
+            raise RuntimeError("Failed to extract last frame after all retries")
 
     @staticmethod
     def extract_frame_to_base64(video_path: str) -> str:
