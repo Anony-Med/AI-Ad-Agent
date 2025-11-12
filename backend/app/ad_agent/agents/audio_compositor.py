@@ -166,9 +166,10 @@ class AudioCompositorAgent:
             script_segments=script_segments,
         )
 
+        durations_list = [f"{s['duration']:.2f}s" for s in segments]
         logger.info(
             f"Generated and segmented voiceover into {len(segments)} parts. "
-            f"Durations: {[f\"{s['duration']:.2f}s\" for s in segments]}"
+            f"Durations: {durations_list}"
         )
 
         # Cleanup full voiceover file (we now have segments)
