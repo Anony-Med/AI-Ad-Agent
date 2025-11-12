@@ -22,8 +22,17 @@ class VideoProcessor:
                 text=True,
                 timeout=5,
             )
-            return result.returncode == 0
-        except (subprocess.SubprocessError, FileNotFoundError):
+            if result.returncode == 0:
+                logger.debug(f"ffmpeg check passed: {result.stdout[:100]}")
+                return True
+            else:
+                logger.error(f"ffmpeg check failed with return code {result.returncode}: {result.stderr}")
+                return False
+        except FileNotFoundError as e:
+            logger.error(f"ffmpeg not found in PATH: {e}")
+            return False
+        except subprocess.SubprocessError as e:
+            logger.error(f"ffmpeg subprocess error: {e}")
             return False
 
     @staticmethod
