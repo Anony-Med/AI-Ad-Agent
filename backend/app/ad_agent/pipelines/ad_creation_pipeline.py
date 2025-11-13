@@ -355,6 +355,7 @@ class AdCreationPipeline:
 
         # Generate clips sequentially, using last frame of each clip for the next
         for i, clip in enumerate(all_clips):
+            logger.info(f"[{job.job_id}] ========== STARTING CLIP {i+1}/{total_clips} ==========")
             logger.info(f"[{job.job_id}] Generating clip {i+1}/{total_clips}")
             logger.info(f"[{job.job_id}]   Prompt: {clip.prompt[:100]}...")
             logger.info(f"[{job.job_id}]   Script: {clip.script_segment}")
@@ -419,20 +420,32 @@ class AdCreationPipeline:
                 completed_clip = retry_clips[0]
                 if completed_clip.status == "completed":
                     logger.info(f"[{job.job_id}] Clip {i} retry succeeded with original avatar")
+                    logger.info(f"[{job.job_id}] Retry clip status: {completed_clip.status}, has_video_b64: {bool(completed_clip.video_b64)}")
+
+                    # CRITICAL CHECK: Ensure retry actually returned video data
+                    if not completed_clip.video_b64:
+                        logger.error(f"[{job.job_id}] CRITICAL: Retry succeeded but no video_b64 data! Marking as failed.")
+                        completed_clip.status = "failed"
+                        completed_clip.error = "Retry succeeded but returned no video data"
                 else:
                     logger.error(f"[{job.job_id}] Clip {i} retry also failed: {completed_clip.error}")
 
             all_clips[i] = completed_clip
+            logger.info(f"[{job.job_id}] Updated all_clips[{i}] with status: {completed_clip.status}")
 
             if completed_clip.status == "completed" and completed_clip.video_b64:
+                logger.info(f"[{job.job_id}] Starting GCS save for clip {i}")
                 try:
                     # Save video to temp file
+                    logger.info(f"[{job.job_id}] Decoding base64 video for clip {i}")
                     temp_video = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
                     video_bytes = base64.b64decode(completed_clip.video_b64)
                     with open(temp_video, 'wb') as f:
                         f.write(video_bytes)
+                    logger.info(f"[{job.job_id}] Saved video to temp file: {temp_video}")
 
                     # Save video to GCS
+                    logger.info(f"[{job.job_id}] Uploading clip {i} to GCS...")
                     gcs_url = await self._save_checkpoint(
                         job.job_id,
                         job.user_id,
@@ -440,30 +453,45 @@ class AdCreationPipeline:
                         f"clips/clip_{i}.mp4"
                     )
                     completed_clip.gcs_url = gcs_url
-                    logger.info(f"[{job.job_id}] Saved clip {i} to GCS")
+                    logger.info(f"[{job.job_id}] Saved clip {i} to GCS: {gcs_url}")
 
                     # Extract last frame for next clip (if not last clip)
                     if i < total_clips - 1:
                         logger.info(f"[{job.job_id}] Extracting last frame from clip {i} for clip {i+1}")
-                        last_frame_b64 = VideoProcessor.extract_frame_to_base64(temp_video)
-                        current_image = f"data:image/jpeg;base64,{last_frame_b64}"
-                        logger.info(f"[{job.job_id}] Extracted last frame ({len(last_frame_b64)} chars base64)")
+                        try:
+                            last_frame_b64 = VideoProcessor.extract_frame_to_base64(temp_video)
+                            current_image = f"data:image/jpeg;base64,{last_frame_b64}"
+                            logger.info(f"[{job.job_id}] Extracted last frame ({len(last_frame_b64)} chars base64)")
+                        except Exception as frame_error:
+                            logger.error(f"[{job.job_id}] Frame extraction failed for clip {i}, using original avatar for next clip: {frame_error}")
+                            # CRITICAL FIX: Use original avatar instead of hanging the pipeline
+                            current_image = request.character_image
+                            logger.info(f"[{job.job_id}] Falling back to original avatar for clip {i+1}")
+                    else:
+                        logger.info(f"[{job.job_id}] Clip {i} is the last clip, skipping frame extraction")
 
                     # Cleanup
+                    logger.info(f"[{job.job_id}] Cleaning up temp file for clip {i}")
                     if os.path.exists(temp_video):
                         os.remove(temp_video)
+                    logger.info(f"[{job.job_id}] Clip {i} processing completed successfully")
 
                 except Exception as e:
-                    logger.error(f"[{job.job_id}] Failed to save clip {i}: {e}")
+                    logger.error(f"[{job.job_id}] Failed to save clip {i}: {e}", exc_info=True)
                     completed_clip.status = "failed"
                     completed_clip.error = str(e)
+            else:
+                logger.warning(f"[{job.job_id}] Skipping GCS save for clip {i} - status: {completed_clip.status}, has_video_b64: {bool(completed_clip.video_b64)}")
 
             # Update progress
             progress = 30 + int(((i + 1) / total_clips) * 20)
             job.progress = progress
             job.updated_at = datetime.utcnow()
+            logger.info(f"[{job.job_id}] Saving job progress: {progress}%")
             await self._save_job(job)
+            logger.info(f"[{job.job_id}] Completed iteration {i+1}/{total_clips}, moving to next clip")
 
+        logger.info(f"[{job.job_id}] Finished processing all {total_clips} clips")
         job.video_clips = all_clips
         successful = sum(1 for c in job.video_clips if c.status == "completed")
         logger.info(f"[{job.job_id}] Generated {successful}/{total_clips} videos with frame-to-frame continuity")
