@@ -115,6 +115,66 @@ class AdCreationPipeline:
         logger.info(f"Loaded checkpoint: {gcs_filename}")
         return local_path
 
+    async def _recover_existing_clip(self, job_id: str, user_id: str, clip_index: int) -> Optional[VideoClip]:
+        """
+        Check if a clip already exists in GCS and recover it.
+
+        This allows the pipeline to resume from where it crashed/timed out.
+
+        Args:
+            job_id: Job ID
+            user_id: User ID
+            clip_index: Clip index (0-based)
+
+        Returns:
+            VideoClip object with recovered data, or None if clip doesn't exist
+        """
+        import tempfile
+        import base64
+
+        clip_filename = f"clips/clip_{clip_index}.mp4"
+
+        # Check if clip exists in GCS
+        exists = await self._checkpoint_exists(job_id, user_id, clip_filename)
+        if not exists:
+            return None
+
+        try:
+            # Download clip from GCS
+            temp_video = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+            await self._load_checkpoint(job_id, user_id, clip_filename, temp_video)
+
+            # Read video and convert to base64
+            with open(temp_video, 'rb') as f:
+                video_bytes = f.read()
+            video_b64 = base64.b64encode(video_bytes).decode('utf-8')
+
+            # Get the signed URL
+            blob_path = await self._get_checkpoint_path(job_id, user_id, clip_filename)
+            gcs_url = await self.storage.get_signed_url(blob_path, expiration_days=7)
+
+            # Cleanup temp file
+            if os.path.exists(temp_video):
+                os.remove(temp_video)
+
+            # Create VideoClip object with recovered data
+            recovered_clip = VideoClip(
+                clip_number=clip_index,
+                prompt="",  # We don't have the original prompt, but it's not needed
+                script_segment="",
+                status="completed",
+                video_b64=video_b64,
+                gcs_url=gcs_url,
+                error=None
+            )
+
+            logger.info(f"[{job_id}] 🔄 RECOVERED existing clip {clip_index} from GCS (recovery from timeout/crash)")
+            return recovered_clip
+
+        except Exception as e:
+            logger.error(f"[{job_id}] Failed to recover clip {clip_index} from GCS: {e}")
+            return None
+
     async def _save_job(self, job: AdJob) -> None:
         """Save job state to Firestore (create if not exists, update otherwise)."""
         if not self.db:
@@ -353,6 +413,19 @@ class AdCreationPipeline:
         total_clips = len(all_clips)
         current_image = request.character_image  # Start with avatar
 
+        # Check for existing clips (recovery mechanism)
+        logger.info(f"[{job.job_id}] Checking for existing clips in GCS (recovery check)...")
+        existing_clips_count = 0
+        for i in range(total_clips):
+            if await self._checkpoint_exists(job.job_id, job.user_id, f"clips/clip_{i}.mp4"):
+                existing_clips_count += 1
+
+        if existing_clips_count > 0:
+            logger.warning(f"[{job.job_id}] 🔄 RECOVERY MODE: Found {existing_clips_count}/{total_clips} existing clips in GCS")
+            logger.warning(f"[{job.job_id}] Pipeline will resume from where it previously crashed/timed out")
+        else:
+            logger.info(f"[{job.job_id}] No existing clips found, starting fresh generation")
+
         # Generate clips sequentially, using last frame of each clip for the next
         for i, clip in enumerate(all_clips):
             logger.info(f"[{job.job_id}] ========== STARTING CLIP {i+1}/{total_clips} ==========")
@@ -369,45 +442,38 @@ class AdCreationPipeline:
                 "progress": 30 + int((i / total_clips) * 20)
             })
 
-            # Save prompt to GCS
-            prompt_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".txt")
-            prompt_file.write(f"Script: {clip.script_segment}\n\nPrompt: {clip.prompt}")
-            prompt_file.close()
+            # RECOVERY MECHANISM: Check if clip already exists in GCS
+            recovered_clip = await self._recover_existing_clip(job.job_id, job.user_id, i)
 
-            prompt_url = await self._save_checkpoint(
-                job.job_id,
-                job.user_id,
-                prompt_file.name,
-                f"prompts/clip_{i}_prompt.txt"
-            )
-            os.remove(prompt_file.name)
-            logger.info(f"[{job.job_id}] Saved prompt to GCS")
+            if recovered_clip:
+                # Use the recovered clip instead of generating a new one
+                logger.warning(f"[{job.job_id}] ⚠️ RESUMING FROM EXISTING CLIP {i} - Pipeline recovered from previous timeout/crash")
+                completed_clip = recovered_clip
+                # Skip to frame extraction and continue
+            else:
+                # Clip doesn't exist, generate it normally
+                # Save prompt to GCS
+                prompt_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".txt")
+                prompt_file.write(f"Script: {clip.script_segment}\n\nPrompt: {clip.prompt}")
+                prompt_file.close()
 
-            # Generate single clip
-            completed_clips = await self.video_agent.wait_for_all_clips(
-                clips=await self.video_agent.generate_all_clips(
-                    prompts=[clip.prompt],
-                    character_image=current_image,
-                    duration=7,
-                    aspect_ratio=request.aspect_ratio or "16:9",
-                    resolution=request.resolution or "720p",
-                    max_concurrent=1,
-                    clip_number_offset=i,
-                ),
-                timeout=600,
-            )
+                prompt_url = await self._save_checkpoint(
+                    job.job_id,
+                    job.user_id,
+                    prompt_file.name,
+                    f"prompts/clip_{i}_prompt.txt"
+                )
+                os.remove(prompt_file.name)
+                logger.info(f"[{job.job_id}] Saved prompt to GCS")
 
-            completed_clip = completed_clips[0]
+                # Combine script and visual prompt for Veo (full context)
+                full_veo_prompt = f"Script/Dialogue: {clip.script_segment}\n\nVisual Description: {clip.prompt}"
 
-            # RETRY LOGIC: If clip failed due to content policy, retry with original avatar
-            if completed_clip.status == "failed" and completed_clip.error and "violates Vertex AI's usage guidelines" in completed_clip.error:
-                logger.warning(f"[{job.job_id}] Clip {i} failed content policy check, retrying with original avatar...")
-
-                # Retry with original avatar instead of extracted frame
-                retry_clips = await self.video_agent.wait_for_all_clips(
+                # Generate single clip
+                completed_clips = await self.video_agent.wait_for_all_clips(
                     clips=await self.video_agent.generate_all_clips(
-                        prompts=[clip.prompt],
-                        character_image=request.character_image,  # Use original avatar
+                        prompts=[full_veo_prompt],
+                        character_image=current_image,
                         duration=7,
                         aspect_ratio=request.aspect_ratio or "16:9",
                         resolution=request.resolution or "720p",
@@ -417,26 +483,46 @@ class AdCreationPipeline:
                     timeout=600,
                 )
 
-                completed_clip = retry_clips[0]
-                if completed_clip.status == "completed":
-                    logger.info(f"[{job.job_id}] Clip {i} retry succeeded with original avatar")
-                    logger.info(f"[{job.job_id}] Retry clip status: {completed_clip.status}, has_video_b64: {bool(completed_clip.video_b64)}")
+                completed_clip = completed_clips[0]
 
-                    # CRITICAL CHECK: Ensure retry actually returned video data
-                    if not completed_clip.video_b64:
-                        logger.error(f"[{job.job_id}] CRITICAL: Retry succeeded but no video_b64 data! Marking as failed.")
-                        completed_clip.status = "failed"
-                        completed_clip.error = "Retry succeeded but returned no video data"
-                else:
-                    logger.error(f"[{job.job_id}] Clip {i} retry also failed: {completed_clip.error}")
+                # RETRY LOGIC: If clip failed due to content policy, retry with original avatar
+                if completed_clip.status == "failed" and completed_clip.error and "violates Vertex AI's usage guidelines" in completed_clip.error:
+                    logger.warning(f"[{job.job_id}] Clip {i} failed content policy check, retrying with original avatar...")
 
+                    # Retry with original avatar instead of extracted frame
+                    retry_clips = await self.video_agent.wait_for_all_clips(
+                        clips=await self.video_agent.generate_all_clips(
+                            prompts=[full_veo_prompt],  # Use same full prompt
+                            character_image=request.character_image,  # Use original avatar
+                            duration=7,
+                            aspect_ratio=request.aspect_ratio or "16:9",
+                            resolution=request.resolution or "720p",
+                            max_concurrent=1,
+                            clip_number_offset=i,
+                        ),
+                        timeout=600,
+                    )
+
+                    completed_clip = retry_clips[0]
+                    if completed_clip.status == "completed":
+                        logger.info(f"[{job.job_id}] Clip {i} retry succeeded with original avatar")
+                        logger.info(f"[{job.job_id}] Retry clip status: {completed_clip.status}, has_video_b64: {bool(completed_clip.video_b64)}")
+
+                        # CRITICAL CHECK: Ensure retry actually returned video data
+                        if not completed_clip.video_b64:
+                            logger.error(f"[{job.job_id}] CRITICAL: Retry succeeded but no video_b64 data! Marking as failed.")
+                            completed_clip.status = "failed"
+                            completed_clip.error = "Retry succeeded but returned no video data"
+                    else:
+                        logger.error(f"[{job.job_id}] Clip {i} retry also failed: {completed_clip.error}")
+
+            # Update all_clips with either recovered or newly generated clip
             all_clips[i] = completed_clip
             logger.info(f"[{job.job_id}] Updated all_clips[{i}] with status: {completed_clip.status}")
 
             if completed_clip.status == "completed" and completed_clip.video_b64:
-                logger.info(f"[{job.job_id}] Starting GCS save for clip {i}")
                 try:
-                    # Save video to temp file
+                    # Save video to temp file for processing
                     logger.info(f"[{job.job_id}] Decoding base64 video for clip {i}")
                     temp_video = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
                     video_bytes = base64.b64decode(completed_clip.video_b64)
@@ -444,16 +530,20 @@ class AdCreationPipeline:
                         f.write(video_bytes)
                     logger.info(f"[{job.job_id}] Saved video to temp file: {temp_video}")
 
-                    # Save video to GCS
-                    logger.info(f"[{job.job_id}] Uploading clip {i} to GCS...")
-                    gcs_url = await self._save_checkpoint(
-                        job.job_id,
-                        job.user_id,
-                        temp_video,
-                        f"clips/clip_{i}.mp4"
-                    )
-                    completed_clip.gcs_url = gcs_url
-                    logger.info(f"[{job.job_id}] Saved clip {i} to GCS: {gcs_url}")
+                    # Only upload to GCS if this was a newly generated clip (not recovered)
+                    if recovered_clip:
+                        logger.info(f"[{job.job_id}] Skipping GCS upload for recovered clip {i} (already exists)")
+                        # GCS URL was already set during recovery
+                    else:
+                        logger.info(f"[{job.job_id}] Uploading clip {i} to GCS...")
+                        gcs_url = await self._save_checkpoint(
+                            job.job_id,
+                            job.user_id,
+                            temp_video,
+                            f"clips/clip_{i}.mp4"
+                        )
+                        completed_clip.gcs_url = gcs_url
+                        logger.info(f"[{job.job_id}] Saved clip {i} to GCS: {gcs_url}")
 
                     # Extract last frame for next clip (if not last clip)
                     if i < total_clips - 1:
