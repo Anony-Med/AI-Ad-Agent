@@ -91,14 +91,17 @@ class GCSStorage:
         file_path: str,
         destination_path: str,
         content_type: Optional[str] = None,
+        timeout: int = 300,  # 5 minute timeout
     ) -> str:
-        """Upload local file to GCS."""
+        """Upload local file to GCS with timeout."""
         try:
             blob = self.bucket.blob(destination_path)
-            blob.upload_from_filename(file_path, content_type=content_type)
+            logger.info(f"Uploading {file_path} to GCS with {timeout}s timeout...")
+            blob.upload_from_filename(file_path, content_type=content_type, timeout=timeout)
+            logger.info(f"Successfully uploaded {file_path} to gs://{settings.GCS_BUCKET_NAME}/{destination_path}")
             return f"gs://{settings.GCS_BUCKET_NAME}/{destination_path}"
         except Exception as e:
-            logger.error(f"Failed to upload file {file_path}: {e}")
+            logger.error(f"Failed to upload file {file_path} after {timeout}s: {e}")
             raise
 
     async def get_signed_url(
