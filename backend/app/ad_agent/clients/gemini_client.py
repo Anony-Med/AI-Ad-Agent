@@ -201,7 +201,9 @@ Generate DYNAMIC prompts with movement and actions now:"""
 Your task: Create DYNAMIC, ACTION-ORIENTED video ad prompts where a character moves, demonstrates, and shows things related to what they're saying, AND extract corresponding script segments.
 
 CRITICAL REQUIREMENTS:
-● Each Veo 3.1 video can be a maximum of 7 seconds
+● Each Veo 3.1 video should be 6-7 seconds of speaking time (not too short!)
+● Segment the script into BALANCED chunks of 15-20 words each (60-80 characters)
+● Avoid creating very short 2-3 second segments - combine them to reach 6-7 seconds
 ● Character must be IN MOTION - walking, gesturing, pointing, demonstrating, interacting with environment
 ● Actions must RELATE TO the script content (e.g., if talking about houses, show houses; if talking about features, point to them)
 ● The character's lip-sync aligns with the dialogue
@@ -219,10 +221,19 @@ STRICT SCRIPT ADHERENCE RULES - CRITICAL:
 ● Better to have silence than to add words not in the original script
 ● The script text is SACRED - use it verbatim without ANY changes
 
+AFTER SCRIPT FINISHES - CRITICAL:
+● If the avatar finishes speaking the script segment before the video ends, DO NOT SPEAK ANYTHING ELSE
+● NO gibberish, NO additional words, NO mumbling, NO mouth movements that look like speaking
+● Instead: smile, walk, gesture, look at camera, interact with environment - VISUAL ACTIONS ONLY
+● The avatar should continue the scene naturally but SILENTLY after the script is done
+● Example: After saying the line, avatar smiles warmly at camera, or continues walking, or gestures confidently
+● NEVER add dialogue or speaking beyond the exact script segment
+
 FORBIDDEN ELEMENTS:
 ● NO text animations, captions, or on-screen text overlays in prompts
 ● NO repeating script words in the visual description
 ● NO going off-script or adding dialogue
+● NO speaking gibberish or additional words after the script segment ends
 
 Output format: Return a JSON object with two arrays:
 - "prompts": Array of DYNAMIC Veo 3.1 video prompts with movement and actions (describe visuals, scenery, and actions ONLY - quote the EXACT script text separately)
@@ -239,7 +250,11 @@ Break this script into:
 1. DYNAMIC Veo 3.1 video prompts (describe camera, scenery, setting, ACTION, MOVEMENT - but DO NOT repeat the script words in the description)
 2. Corresponding EXACT script segments - COPY the exact words from the script above, word-for-word
 
-Each clip should be 7 seconds max.
+SEGMENT LENGTH REQUIREMENTS:
+● Each clip should be 6-7 seconds of speaking time (approximately 15-20 words or 60-80 characters per segment)
+● Create BALANCED segments - avoid very short clips (2-3 seconds) that leave the avatar with nothing to say
+● Distribute the script text EVENLY across all clips
+● If a natural break creates a short segment, combine it with the previous or next segment to reach 6-7 seconds
 
 🚨 CRITICAL RULES - THE AVATAR WILL SPEAK ONLY THESE EXACT WORDS:
 1. Copy the EXACT WORDS from the script into script_segments - character by character, no modifications
@@ -253,6 +268,7 @@ Each clip should be 7 seconds max.
 9. If a segment is short, allow SILENCE with visual action only
 10. Better to have silence than add words not in the script
 11. NEVER paraphrase, summarize, or reword the script - use it VERBATIM
+12. 🚨 AFTER SCRIPT ENDS: Avatar should STOP SPEAKING completely - just smile, walk, gesture, or do visual actions ONLY. NO gibberish, NO additional words, NO mouth movements that look like speaking
 
 Return in this JSON format with DYNAMIC prompts:
 {{
@@ -264,7 +280,7 @@ Return in this JSON format with DYNAMIC prompts:
   ]
 }}
 
-Generate DYNAMIC prompts NOW (remember: scenery descriptions YES, text overlays NO, exact script words only, allow silence):"""
+Generate DYNAMIC prompts NOW (remember: scenery descriptions YES, text overlays NO, exact script words only, NO gibberish after script ends):"""
 
         response = await self.generate_text(
             prompt=prompt,
