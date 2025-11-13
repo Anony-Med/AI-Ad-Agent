@@ -883,96 +883,67 @@ class VideoProcessor:
     @staticmethod
     def extract_last_frame(video_path: str, output_path: str, max_retries: int = 3) -> str:
         """
-        Extract the last frame from a video as an image with retry logic.
+        Extract the last frame from a video as an image using cv2 (OpenCV).
 
         Args:
             video_path: Path to input video
             output_path: Path to save output image (e.g., frame.jpg)
-            max_retries: Maximum number of retry attempts for timeout errors
+            max_retries: Maximum number of retry attempts (not used with cv2, kept for compatibility)
 
         Returns:
             Path to extracted frame image
 
         Raises:
-            RuntimeError: If ffmpeg fails after all retries
+            RuntimeError: If extraction fails
 
         Note:
-            ffmpeg availability is checked once at application startup.
-            This method assumes ffmpeg is available and will raise an error if not.
-            Timeout errors will be retried up to max_retries times.
+            Uses cv2.VideoCapture instead of FFmpeg - much faster and more reliable.
         """
-        # Use ffmpeg to extract the last frame
-        # -sseof -1 seeks to 1 second before end
-        # -frames:v 1 extracts one frame
-        # -update 1 keeps updating the same output file
-        ffmpeg_cmd = [
-            "ffmpeg",
-            "-sseof", "-0.5",  # Seek to 0.5 seconds before end
-            "-i", video_path,
-            "-frames:v", "1",  # Extract one frame
-            "-q:v", "2",  # High quality JPEG (2 is very high quality)
-            "-y",  # Overwrite output
-            output_path,
-        ]
+        import cv2
 
-        last_error = None
+        logger.info(f"Extracting last frame using cv2 from {video_path}")
 
-        for attempt in range(1, max_retries + 1):
-            try:
-                logger.info(f"Extracting last frame (attempt {attempt}/{max_retries})")
+        try:
+            # Open video file
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                raise RuntimeError(f"Could not open video: {video_path}")
 
-                result = subprocess.run(
-                    ffmpeg_cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=60,  # Increased from 30s to handle larger videos
-                )
+            # Get total number of frames
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            if total_frames <= 0:
+                cap.release()
+                raise RuntimeError(f"Video has no frames: {video_path}")
 
-                if result.returncode != 0:
-                    error_msg = f"FFmpeg error (exit code {result.returncode}): {result.stderr}"
-                    logger.error(error_msg)
-                    last_error = RuntimeError(error_msg)
+            # Seek to last frame
+            cap.set(cv2.CAP_PROP_POS_FRAMES, total_frames - 1)
 
-                    # Check if it's a specific error we can retry
-                    if "timeout" in result.stderr.lower() or "timed out" in result.stderr.lower():
-                        logger.warning(f"FFmpeg error appears to be timeout-related, will retry")
-                        if attempt < max_retries:
-                            continue
-                    else:
-                        # Non-timeout error, don't retry
-                        logger.error(f"Non-timeout FFmpeg error, not retrying: {result.stderr[:200]}")
-                        raise last_error
-                else:
-                    # Success!
-                    logger.info(f"✅ Extracted last frame to {output_path}")
-                    return output_path
+            # Read last frame
+            ret, frame = cap.read()
+            cap.release()
 
-            except subprocess.TimeoutExpired as e:
-                error_msg = f"FFmpeg timeout after 60s (attempt {attempt}/{max_retries})"
-                logger.warning(error_msg)
-                last_error = RuntimeError(error_msg)
+            if not ret or frame is None:
+                raise RuntimeError(f"Failed to read last frame from {video_path}")
 
-                if attempt < max_retries:
-                    logger.info(f"Retrying FFmpeg frame extraction...")
-                    continue
-                else:
-                    logger.error(f"FFmpeg failed after {max_retries} attempts due to timeout")
-                    raise RuntimeError(f"Failed to extract frame after {max_retries} timeout attempts")
+            # Create output directory if needed
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-            except Exception as e:
-                logger.error(f"Unexpected error during FFmpeg frame extraction: {e}")
-                raise RuntimeError(f"Unexpected FFmpeg error: {str(e)}")
+            # Save frame as JPEG
+            success = cv2.imwrite(output_path, frame)
+            if not success:
+                raise RuntimeError(f"Failed to write frame to {output_path}")
 
-        # If we get here, all retries failed
-        if last_error:
-            raise last_error
-        else:
-            raise RuntimeError("Failed to extract last frame after all retries")
+            logger.info(f"✅ Extracted last frame to {output_path} (cv2)")
+            return output_path
+
+        except Exception as e:
+            logger.error(f"cv2 frame extraction failed: {e}")
+            raise RuntimeError(f"Failed to extract frame with cv2: {str(e)}")
 
     @staticmethod
     def extract_frame_to_base64(video_path: str) -> str:
         """
-        Extract the last frame from a video and return as base64 string.
+        Extract the last frame from a video and return as base64 string using cv2.
 
         Args:
             video_path: Path to input video
@@ -981,27 +952,46 @@ class VideoProcessor:
             Base64 encoded JPEG image string
 
         Raises:
-            RuntimeError: If ffmpeg fails
+            RuntimeError: If extraction fails
         """
+        import cv2
         import base64
 
-        # Use temp file to extract frame
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as temp_file:
-            temp_path = temp_file.name
+        logger.info(f"Extracting last frame to base64 using cv2")
 
         try:
-            # Extract last frame
-            VideoProcessor.extract_last_frame(video_path, temp_path)
+            # Open video file
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                raise RuntimeError(f"Could not open video: {video_path}")
 
-            # Read and encode to base64
-            with open(temp_path, "rb") as f:
-                image_data = f.read()
-                b64_data = base64.b64encode(image_data).decode("utf-8")
+            # Get total number of frames
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            if total_frames <= 0:
+                cap.release()
+                raise RuntimeError(f"Video has no frames: {video_path}")
 
-            logger.info(f"Extracted last frame as base64 ({len(b64_data)} chars)")
+            # Seek to last frame
+            cap.set(cv2.CAP_PROP_POS_FRAMES, total_frames - 1)
+
+            # Read last frame
+            ret, frame = cap.read()
+            cap.release()
+
+            if not ret or frame is None:
+                raise RuntimeError(f"Failed to read last frame from {video_path}")
+
+            # Encode frame to JPEG in memory
+            ret, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            if not ret:
+                raise RuntimeError(f"Failed to encode frame to JPEG")
+
+            # Convert to base64
+            b64_data = base64.b64encode(buffer).decode("utf-8")
+
+            logger.info(f"✅ Extracted last frame as base64 ({len(b64_data)} chars) using cv2")
             return b64_data
 
-        finally:
-            # Cleanup temp file
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
+        except Exception as e:
+            logger.error(f"cv2 frame extraction to base64 failed: {e}")
+            raise RuntimeError(f"Failed to extract frame with cv2: {str(e)}")

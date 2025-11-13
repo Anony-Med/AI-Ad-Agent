@@ -30,6 +30,7 @@ class VideoGeneratorAgent:
         duration: int = 7,
         aspect_ratio: str = "16:9",
         resolution: str = "720p",
+        sample_count: int = 1,  # Number of videos to generate (1-4). Set to 1 for cost efficiency.
     ) -> VideoClip:
         """
         Generate a single video clip using Veo 3.1 image-to-video mode.
@@ -41,11 +42,12 @@ class VideoGeneratorAgent:
             duration: Duration in seconds (4, 6, or 8 for Veo)
             aspect_ratio: Aspect ratio
             resolution: Video resolution (720p or 1080p)
+            sample_count: Number of video variations to generate (1-4, default 1). Increase for multiple options.
 
         Returns:
             VideoClip with job info
         """
-        logger.info(f"Generating clip {clip_number} with Direct Veo API")
+        logger.info(f"Generating clip {clip_number} with Direct Veo API (sample_count={sample_count})")
         logger.info(f"DEBUG VIDEO_GEN: generate_video_clip called with clip_number={clip_number}")
 
         # Adjust duration to valid Veo values
@@ -70,17 +72,18 @@ class VideoGeneratorAgent:
             )
 
             # Create video job via Direct Veo API
+            # Generate multiple samples - Veo will return fastest one
             operation_id = await self.client.create_video_job(
                 prompt=prompt,
                 character_image_b64=optimized_image,
                 duration_seconds=duration,
                 aspect_ratio=aspect_ratio,
                 resolution=resolution,
-                sample_count=1,  # Generate 1 video per clip
+                sample_count=sample_count,  # Generate multiple videos
                 generate_audio=True,
             )
 
-            logger.info(f"Clip {clip_number} job created: {operation_id}")
+            logger.info(f"Clip {clip_number} job created with {sample_count} video(s): {operation_id}")
 
             created_clip = VideoClip(
                 clip_number=clip_number,
@@ -159,6 +162,7 @@ class VideoGeneratorAgent:
         job_id: str,
         timeout: int = 600,
         poll_interval: int = 10,
+        return_all_videos: bool = False,
     ) -> Dict[str, Any]:
         """
         Poll video job until completion.
@@ -167,6 +171,7 @@ class VideoGeneratorAgent:
             job_id: Video operation ID
             timeout: Max wait time in seconds
             poll_interval: Seconds between polls
+            return_all_videos: If True, return all generated videos. If False, return only first.
 
         Returns:
             Job result with video data
@@ -187,13 +192,22 @@ class VideoGeneratorAgent:
             # Extract video data
             videos = self.client.extract_video_urls(result)
             if videos:
-                # Return first video as base64 string
-                logger.info(f"Video job {job_id} completed successfully")
-                return {
-                    "status": "succeeded",
-                    "video_b64": videos[0],
-                    "result": result,
-                }
+                if return_all_videos:
+                    # Return all videos
+                    logger.info(f"Video job {job_id} completed with {len(videos)} video(s)")
+                    return {
+                        "status": "succeeded",
+                        "videos": videos,  # List of base64 strings
+                        "result": result,
+                    }
+                else:
+                    # Return first video (legacy behavior)
+                    logger.info(f"Video job {job_id} completed successfully")
+                    return {
+                        "status": "succeeded",
+                        "video_b64": videos[0],
+                        "result": result,
+                    }
             else:
                 raise VeoAPIError("Job completed but no video generated")
 
@@ -301,13 +315,27 @@ class VideoGeneratorAgent:
                     result = await self.wait_for_video_completion(
                         job_id=clip.veo_job_id,
                         timeout=timeout,
+                        return_all_videos=True,  # Get all videos (default: 1, configurable via sample_count)
                     )
 
-                    # Store video as base64 in the clip
-                    clip.video_b64 = result["video_b64"]
-                    clip.status = "completed"
-                    logger.info(f"✅ Clip {clip.clip_number} completed on attempt {attempt + 1}")
-                    return clip
+                    # Extract video(s) from response (default: 1 video, or more if sample_count > 1)
+                    videos = result.get("videos", [])
+                    if videos and len(videos) > 0:
+                        # Use the first video (when sample_count=1, there's only one; when >1, use first)
+                        clip.video_b64 = videos[0]
+                        clip.status = "completed"
+                        logger.info(f"✅ Clip {clip.clip_number} completed on attempt {attempt + 1} ({len(videos)} video(s) received)")
+                        return clip
+
+                    # Legacy fallback for single video response
+                    if "video_b64" in result:
+                        clip.video_b64 = result["video_b64"]
+                        clip.status = "completed"
+                        logger.info(f"✅ Clip {clip.clip_number} completed on attempt {attempt + 1}")
+                        return clip
+
+                    # No videos generated
+                    raise VeoAPIError("No videos in response")
 
                 except TimeoutError as e:
                     logger.warning(f"⏱️ Clip {clip.clip_number} timed out on attempt {attempt + 1}/{max_retries}")
@@ -354,10 +382,59 @@ class VideoGeneratorAgent:
                 except Exception as e:
                     logger.error(f"Clip {clip.clip_number} failed on attempt {attempt + 1}: {e}")
 
-                    # For non-timeout errors, don't retry
-                    clip.status = "failed"
-                    clip.error = str(e)
-                    return clip
+                    # TASK 4: Retry ALL errors (not just timeout)
+                    # Check if this is a content policy error
+                    error_str = str(e).lower()
+                    is_content_policy = any(phrase in error_str for phrase in [
+                        "safety filter", "blocked by", "violates", "content policy",
+                        "usage guidelines", "inappropriate content"
+                    ])
+
+                    # If not last attempt, retry with new Veo job
+                    if attempt < max_retries - 1 and character_image and clip_prompt:
+                        if is_content_policy:
+                            logger.warning(f"🔄 Clip {clip.clip_number}: Content policy error - retrying with same prompt (attempt {attempt + 2}/{max_retries})")
+                        else:
+                            logger.warning(f"🔄 Clip {clip.clip_number}: Error occurred - retrying anyway (need clip on any basis) (attempt {attempt + 2}/{max_retries})")
+
+                        try:
+                            # Create new video job with same parameters
+                            new_clip = await self.generate_video_clip(
+                                prompt=clip_prompt,
+                                character_image=character_image,
+                                clip_number=clip.clip_number,
+                                duration=duration,
+                                aspect_ratio=aspect_ratio,
+                                resolution=resolution,
+                            )
+
+                            if new_clip.status != "failed":
+                                # Update clip with new job ID and continue retry loop
+                                clip.veo_job_id = new_clip.veo_job_id
+                                logger.info(f"Created new Veo job for clip {clip.clip_number}: {clip.veo_job_id}")
+                            else:
+                                logger.error(f"Failed to create retry job for clip {clip.clip_number}: {new_clip.error}")
+                                # Don't return yet - let the retry loop continue
+                                if attempt >= max_retries - 1:
+                                    clip.status = "failed"
+                                    clip.error = f"Retry job creation failed: {new_clip.error}"
+                                    return clip
+
+                        except Exception as retry_error:
+                            logger.error(f"Failed to create retry job for clip {clip.clip_number}: {retry_error}")
+                            # Don't return yet - let the retry loop continue
+                            if attempt >= max_retries - 1:
+                                clip.status = "failed"
+                                clip.error = f"Retry failed: {str(retry_error)}"
+                                return clip
+                    else:
+                        # Last attempt or missing retry params
+                        if not character_image or not clip_prompt:
+                            logger.warning(f"Cannot retry clip {clip.clip_number}: missing retry parameters")
+                        logger.error(f"❌ Clip {clip.clip_number} failed after {max_retries} attempts: {str(e)}")
+                        clip.status = "failed"
+                        clip.error = f"Failed after {max_retries} attempts: {str(e)}"
+                        return clip
 
             return clip
 

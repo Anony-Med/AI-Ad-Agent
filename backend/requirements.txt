@@ -32,5 +32,8 @@ passlib[bcrypt]>=1.7.4
 tenacity>=8.2.3
 pillow>=10.2.0
 
+# Video Processing
+opencv-python-headless>=4.9.0  # Headless version for server use
+
 # Audio Processing
 pydub>=0.25.1

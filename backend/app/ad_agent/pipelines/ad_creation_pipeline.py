@@ -494,7 +494,16 @@ class AdCreationPipeline:
                 completed_clip = completed_clips[0]
 
                 # RETRY LOGIC: If clip failed due to content policy, retry with original avatar
-                if completed_clip.status == "failed" and completed_clip.error and "violates Vertex AI's usage guidelines" in completed_clip.error:
+                # Check for multiple content policy error patterns (not just one specific string)
+                is_content_policy_error = False
+                if completed_clip.status == "failed" and completed_clip.error:
+                    error_lower = completed_clip.error.lower()
+                    is_content_policy_error = any(phrase in error_lower for phrase in [
+                        "safety filter", "blocked by", "violates", "content policy",
+                        "usage guidelines", "inappropriate content"
+                    ])
+
+                if is_content_policy_error:
                     logger.warning(f"[{job.job_id}] Clip {i} failed content policy check, retrying with original avatar...")
 
                     # Retry with original avatar instead of extracted frame
