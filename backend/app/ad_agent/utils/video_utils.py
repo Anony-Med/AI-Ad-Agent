@@ -5,12 +5,79 @@ import tempfile
 import subprocess
 from typing import List, Optional
 import httpx
+import re
+from urllib.parse import urlparse, parse_qs
 
 logger = logging.getLogger(__name__)
 
 
 class VideoProcessor:
     """Handles video merging and editing using ffmpeg."""
+
+    # GCS Fuse mount point (Option 1)
+    GCS_MOUNT_POINT = "/mnt/gcs"
+
+    @staticmethod
+    def extract_gcs_path_from_signed_url(signed_url: str) -> Optional[str]:
+        """
+        Extract GCS path from a signed URL.
+
+        Args:
+            signed_url: GCS signed URL (e.g., https://storage.googleapis.com/bucket/path?...)
+
+        Returns:
+            GCS path without bucket (e.g., "user123/job456/clip_0.mp4")
+            or None if not a valid GCS URL
+
+        Example:
+            Input: "https://storage.googleapis.com/ai-ad-agent-assets/user123/job456/clip_0.mp4?X-Goog-..."
+            Output: "user123/job456/clip_0.mp4"
+        """
+        try:
+            # Parse URL
+            parsed = urlparse(signed_url)
+
+            # Check if it's a GCS URL
+            if "storage.googleapis.com" not in parsed.netloc:
+                return None
+
+            # Extract path (remove leading slash and bucket name)
+            # Path format: /bucket-name/path/to/file.mp4
+            path_parts = parsed.path.strip("/").split("/", 1)
+            if len(path_parts) < 2:
+                return None
+
+            # Return path without bucket name
+            gcs_path = path_parts[1]
+            logger.debug(f"Extracted GCS path: {gcs_path}")
+            return gcs_path
+
+        except Exception as e:
+            logger.error(f"Failed to extract GCS path from URL: {e}")
+            return None
+
+    @staticmethod
+    def is_gcsfuse_available() -> bool:
+        """Check if gcsfuse is installed and available."""
+        try:
+            result = subprocess.run(
+                ["gcsfuse", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                logger.info(f"gcsfuse available: {result.stdout.strip()}")
+                return True
+            return False
+        except (FileNotFoundError, subprocess.SubprocessError) as e:
+            logger.warning(f"gcsfuse not available: {e}")
+            return False
+
+    @staticmethod
+    def is_gcs_mounted() -> bool:
+        """Check if GCS bucket is mounted via gcsfuse."""
+        return os.path.ismount(VideoProcessor.GCS_MOUNT_POINT) or os.path.exists(VideoProcessor.GCS_MOUNT_POINT)
 
     @staticmethod
     def check_ffmpeg() -> bool:
@@ -62,43 +129,161 @@ class VideoProcessor:
         video_urls: List[str],
         output_path: str,
         include_audio: bool = True,
+        use_streaming: bool = True,
     ) -> str:
         """
         Merge multiple videos into one.
 
         Args:
-            video_urls: List of video URLs to merge
+            video_urls: List of video URLs to merge (GCS signed URLs or local paths)
             output_path: Path for output video
             include_audio: Whether to include audio
+            use_streaming: If True, stream from URLs directly (no download). If False, download first.
 
         Returns:
             Path to merged video
 
         Note:
             ffmpeg availability is checked once at application startup.
+            Streaming mode (use_streaming=True) eliminates downloads and saves memory/time.
         """
 
         if not video_urls:
             raise ValueError("No videos to merge")
 
-        # Download all videos to temp directory
         temp_dir = tempfile.mkdtemp()
-        temp_files = []
+        concat_file = os.path.join(temp_dir, "concat.txt")
 
         try:
-            # Download videos
-            for i, url in enumerate(video_urls):
-                temp_file = os.path.join(temp_dir, f"clip_{i:03d}.mp4")
-                await VideoProcessor.download_video(url, temp_file)
-                temp_files.append(temp_file)
+            if use_streaming:
+                # OPTION 2: Stream from URLs directly (NO DOWNLOAD)
+                logger.info(f"Merging {len(video_urls)} videos via HTTP streaming (no local download)")
 
-            # Create concat file for ffmpeg
-            concat_file = os.path.join(temp_dir, "concat.txt")
-            with open(concat_file, "w") as f:
+                # Create concat file with URLs directly
+                with open(concat_file, "w") as f:
+                    for url in video_urls:
+                        # FFmpeg concat requires proper escaping of URLs
+                        f.write(f"file '{url}'\n")
+
+                # Merge using ffmpeg with HTTP protocol enabled
+                ffmpeg_cmd = [
+                    "ffmpeg",
+                    "-protocol_whitelist", "file,https,tls,tcp,http",  # Allow HTTPS streaming
+                    "-f", "concat",
+                    "-safe", "0",
+                    "-i", concat_file,
+                    "-c", "copy" if include_audio else "-c:v copy -an",
+                    "-y",  # Overwrite output
+                    output_path,
+                ]
+
+                logger.info("FFmpeg merging videos via streaming (no downloads)...")
+
+            else:
+                # LEGACY: Download all videos to temp directory (OLD METHOD)
+                logger.warning("Using legacy download mode - consider switching to streaming mode")
+                temp_files = []
+
+                # Download videos
+                for i, url in enumerate(video_urls):
+                    temp_file = os.path.join(temp_dir, f"clip_{i:03d}.mp4")
+                    logger.info(f"Downloading clip {i+1}/{len(video_urls)} from GCS...")
+                    await VideoProcessor.download_video(url, temp_file)
+                    temp_files.append(temp_file)
+
+                # Create concat file for ffmpeg
+                with open(concat_file, "w") as f:
+                    for temp_file in temp_files:
+                        f.write(f"file '{temp_file}'\n")
+
+                # Merge using ffmpeg
+                ffmpeg_cmd = [
+                    "ffmpeg",
+                    "-f", "concat",
+                    "-safe", "0",
+                    "-i", concat_file,
+                    "-c", "copy" if include_audio else "-c:v copy -an",
+                    "-y",  # Overwrite output
+                    output_path,
+                ]
+
+            # Run FFmpeg
+            result = subprocess.run(
+                ffmpeg_cmd,
+                capture_output=True,
+                text=True,
+                timeout=300,  # 5 minute timeout
+            )
+
+            if result.returncode != 0:
+                logger.error(f"ffmpeg error: {result.stderr}")
+                raise RuntimeError(f"Video merge failed: {result.stderr}")
+
+            logger.info(f"✅ Merged {len(video_urls)} videos to {output_path} (streaming mode: {use_streaming})")
+            return output_path
+
+        finally:
+            # Cleanup temp files (only concat file in streaming mode)
+            if not use_streaming:
                 for temp_file in temp_files:
-                    f.write(f"file '{temp_file}'\n")
+                    if os.path.exists(temp_file):
+                        os.remove(temp_file)
+            if os.path.exists(concat_file):
+                os.remove(concat_file)
+            if os.path.exists(temp_dir):
+                os.rmdir(temp_dir)
 
-            # Merge using ffmpeg
+    @staticmethod
+    async def merge_videos_with_gcsfuse(
+        video_urls: List[str],
+        output_path: str,
+        include_audio: bool = True,
+    ) -> str:
+        """
+        Merge videos using GCS Fuse (Option 1).
+
+        This method reads videos directly from GCS via gcsfuse mount,
+        eliminating downloads entirely.
+
+        Args:
+            video_urls: List of GCS signed URLs
+            output_path: Path for output video
+            include_audio: Whether to include audio
+
+        Returns:
+            Path to merged video
+
+        Raises:
+            RuntimeError: If gcsfuse is not available or mounted
+
+        Note:
+            Requires gcsfuse to be installed and GCS bucket mounted at /mnt/gcs
+        """
+        if not VideoProcessor.is_gcsfuse_available():
+            raise RuntimeError("gcsfuse is not installed - cannot use GCS Fuse merge")
+
+        if not VideoProcessor.is_gcs_mounted():
+            raise RuntimeError(f"GCS bucket not mounted at {VideoProcessor.GCS_MOUNT_POINT}")
+
+        logger.info(f"Merging {len(video_urls)} videos via GCS Fuse (ZERO downloads)")
+
+        temp_dir = tempfile.mkdtemp()
+        concat_file = os.path.join(temp_dir, "concat.txt")
+
+        try:
+            # Create concat file with GCS Fuse paths
+            with open(concat_file, "w") as f:
+                for url in video_urls:
+                    # Extract GCS path from signed URL
+                    gcs_path = VideoProcessor.extract_gcs_path_from_signed_url(url)
+                    if not gcs_path:
+                        raise ValueError(f"Invalid GCS URL: {url}")
+
+                    # Create full path to mounted GCS file
+                    mounted_path = os.path.join(VideoProcessor.GCS_MOUNT_POINT, gcs_path)
+                    f.write(f"file '{mounted_path}'\n")
+
+            # Merge using ffmpeg (reads directly from GCS via fuse)
             ffmpeg_cmd = [
                 "ffmpeg",
                 "-f", "concat",
@@ -108,6 +293,8 @@ class VideoProcessor:
                 "-y",  # Overwrite output
                 output_path,
             ]
+
+            logger.info("FFmpeg reading videos from GCS Fuse mount (zero downloads)...")
 
             result = subprocess.run(
                 ffmpeg_cmd,
@@ -120,17 +307,15 @@ class VideoProcessor:
                 logger.error(f"ffmpeg error: {result.stderr}")
                 raise RuntimeError(f"Video merge failed: {result.stderr}")
 
-            logger.info(f"Merged {len(video_urls)} videos to {output_path}")
+            logger.info(f"✅ Merged {len(video_urls)} videos via GCS Fuse (ZERO downloads)")
             return output_path
 
         finally:
-            # Cleanup temp files
-            for temp_file in temp_files:
-                if os.path.exists(temp_file):
-                    os.remove(temp_file)
+            # Cleanup concat file
             if os.path.exists(concat_file):
                 os.remove(concat_file)
-            os.rmdir(temp_dir)
+            if os.path.exists(temp_dir):
+                os.rmdir(temp_dir)
 
     @staticmethod
     def add_audio_to_video(

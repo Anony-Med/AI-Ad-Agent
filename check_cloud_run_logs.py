@@ -50,7 +50,7 @@ def fetch_cloud_run_logs(hours_ago=2):
             severity = log.get('severity', 'INFO')
 
             # Look for job ID
-            if '1762931168' in str(text):
+            if '1762980163' in str(text):
                 job_logs.append((timestamp, severity, text))
 
             # Collect errors
@@ -60,7 +60,7 @@ def fetch_cloud_run_logs(hours_ago=2):
         # Display job-specific logs
         if job_logs:
             print("\n" + "=" * 80)
-            print("LOGS FOR JOB ad_1762931168.047527:")
+            print("LOGS FOR JOB ad_1762980163.250578:")
             print("=" * 80)
             for ts, sev, msg in job_logs:
                 print(f"\n[{ts}] [{sev}]")
@@ -86,5 +86,5 @@ def fetch_cloud_run_logs(hours_ago=2):
         print(f"Error: {e}")
 
 if __name__ == "__main__":
-    # Fetch logs from last 6 hours (job ran at 07:06 UTC on Nov 12)
-    fetch_cloud_run_logs(hours_ago=6)
+    # Fetch logs from last 1 hour (recent job)
+    fetch_cloud_run_logs(hours_ago=1)

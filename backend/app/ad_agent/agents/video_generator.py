@@ -264,43 +264,110 @@ class VideoGeneratorAgent:
         self,
         clips: List[VideoClip],
         timeout: int = 600,
+        max_retries: int = 3,
+        character_image: str = None,
+        prompts: List[str] = None,
+        duration: int = 7,
+        aspect_ratio: str = "16:9",
+        resolution: str = "720p",
     ) -> List[VideoClip]:
         """
-        Wait for all video clips to complete.
+        Wait for all video clips to complete with automatic retry on timeout.
 
         Args:
             clips: List of VideoClip objects
-            timeout: Max wait time per clip
+            timeout: Max wait time per clip attempt
+            max_retries: Max retry attempts per clip (default: 3)
+            character_image: Character image for retry (optional)
+            prompts: List of prompts for retry (optional, must match clips length)
+            duration: Duration for retry
+            aspect_ratio: Aspect ratio for retry
+            resolution: Resolution for retry
 
         Returns:
             Updated list of VideoClip objects with video data
         """
-        logger.info(f"Waiting for {len(clips)} video clips to complete")
+        logger.info(f"Waiting for {len(clips)} video clips to complete (max {max_retries} retries per clip)")
 
-        async def wait_for_clip(clip: VideoClip) -> VideoClip:
+        async def wait_for_clip_with_retry(clip: VideoClip, clip_prompt: str = None) -> VideoClip:
+            """Wait for clip with automatic retry on timeout."""
             if clip.status == "failed" or not clip.veo_job_id:
                 return clip
 
-            try:
-                result = await self.wait_for_video_completion(
-                    job_id=clip.veo_job_id,
-                    timeout=timeout,
-                )
+            for attempt in range(max_retries):
+                try:
+                    logger.info(f"Clip {clip.clip_number}: Attempt {attempt + 1}/{max_retries}")
 
-                # Store video as base64 in the clip
-                clip.video_b64 = result["video_b64"]
-                clip.status = "completed"
-                logger.info(f"Clip {clip.clip_number} completed")
+                    result = await self.wait_for_video_completion(
+                        job_id=clip.veo_job_id,
+                        timeout=timeout,
+                    )
 
-            except Exception as e:
-                logger.error(f"Clip {clip.clip_number} failed: {e}")
-                clip.status = "failed"
-                clip.error = str(e)
+                    # Store video as base64 in the clip
+                    clip.video_b64 = result["video_b64"]
+                    clip.status = "completed"
+                    logger.info(f"✅ Clip {clip.clip_number} completed on attempt {attempt + 1}")
+                    return clip
+
+                except TimeoutError as e:
+                    logger.warning(f"⏱️ Clip {clip.clip_number} timed out on attempt {attempt + 1}/{max_retries}")
+
+                    # If not last attempt, create a NEW Veo job with same prompt
+                    if attempt < max_retries - 1 and character_image and clip_prompt:
+                        logger.info(f"🔄 Retrying clip {clip.clip_number} with a NEW Veo request...")
+
+                        try:
+                            # Create new video job
+                            new_clip = await self.generate_video_clip(
+                                prompt=clip_prompt,
+                                character_image=character_image,
+                                clip_number=clip.clip_number,
+                                duration=duration,
+                                aspect_ratio=aspect_ratio,
+                                resolution=resolution,
+                            )
+
+                            if new_clip.status != "failed":
+                                # Update clip with new job ID
+                                clip.veo_job_id = new_clip.veo_job_id
+                                logger.info(f"Created new Veo job for clip {clip.clip_number}: {clip.veo_job_id}")
+                            else:
+                                logger.error(f"Failed to create retry job for clip {clip.clip_number}: {new_clip.error}")
+                                clip.status = "failed"
+                                clip.error = f"Retry job creation failed: {new_clip.error}"
+                                return clip
+
+                        except Exception as retry_error:
+                            logger.error(f"Failed to create retry job for clip {clip.clip_number}: {retry_error}")
+                            clip.status = "failed"
+                            clip.error = f"Retry failed: {str(retry_error)}"
+                            return clip
+                    else:
+                        # Last attempt or missing retry params
+                        if not character_image or not clip_prompt:
+                            logger.warning(f"Cannot retry clip {clip.clip_number}: missing retry parameters")
+                        logger.error(f"❌ Clip {clip.clip_number} failed after {max_retries} attempts")
+                        clip.status = "failed"
+                        clip.error = f"Timeout after {max_retries} attempts"
+                        return clip
+
+                except Exception as e:
+                    logger.error(f"Clip {clip.clip_number} failed on attempt {attempt + 1}: {e}")
+
+                    # For non-timeout errors, don't retry
+                    clip.status = "failed"
+                    clip.error = str(e)
+                    return clip
 
             return clip
 
-        # Wait for all clips concurrently
-        updated_clips = await asyncio.gather(*[wait_for_clip(c) for c in clips])
+        # Wait for all clips with retry support
+        tasks = []
+        for i, clip in enumerate(clips):
+            clip_prompt = prompts[i] if prompts and i < len(prompts) else None
+            tasks.append(wait_for_clip_with_retry(clip, clip_prompt))
+
+        updated_clips = await asyncio.gather(*tasks)
 
         successful = sum(1 for c in updated_clips if c.status == "completed")
         logger.info(f"Completed {successful}/{len(updated_clips)} video clips")

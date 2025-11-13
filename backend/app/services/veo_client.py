@@ -149,7 +149,9 @@ class DirectVeoClient:
             },
         }
 
-        logger.info(f"Creating Veo video job: {prompt[:100]}...")
+        logger.info(f"Creating Veo video job (prompt length: {len(prompt)} chars)")
+        logger.info(f"  Prompt preview: {prompt[:120]}...")
+        logger.info(f"  Full prompt: {prompt}")
         logger.debug(f"  Duration: {duration_seconds}s | Resolution: {resolution} | Aspect: {aspect_ratio}")
 
         async with httpx.AsyncClient(timeout=30.0) as client:

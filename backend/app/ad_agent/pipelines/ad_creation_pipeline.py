@@ -468,8 +468,10 @@ class AdCreationPipeline:
 
                 # Combine script and visual prompt for Veo (full context)
                 full_veo_prompt = f"Script/Dialogue: {clip.script_segment}\n\nVisual Description: {clip.prompt}"
+                logger.info(f"[{job.job_id}] Full Veo prompt length: {len(full_veo_prompt)} chars")
+                logger.info(f"[{job.job_id}] Full Veo prompt: {full_veo_prompt}")
 
-                # Generate single clip
+                # Generate single clip with retry support
                 completed_clips = await self.video_agent.wait_for_all_clips(
                     clips=await self.video_agent.generate_all_clips(
                         prompts=[full_veo_prompt],
@@ -481,6 +483,12 @@ class AdCreationPipeline:
                         clip_number_offset=i,
                     ),
                     timeout=600,
+                    max_retries=3,  # Retry up to 3 times on timeout
+                    character_image=current_image,  # For retry
+                    prompts=[full_veo_prompt],  # For retry
+                    duration=7,
+                    aspect_ratio=request.aspect_ratio or "16:9",
+                    resolution=request.resolution or "720p",
                 )
 
                 completed_clip = completed_clips[0]
@@ -501,6 +509,12 @@ class AdCreationPipeline:
                             clip_number_offset=i,
                         ),
                         timeout=600,
+                        max_retries=3,  # Retry up to 3 times on timeout
+                        character_image=request.character_image,  # For retry
+                        prompts=[full_veo_prompt],  # For retry
+                        duration=7,
+                        aspect_ratio=request.aspect_ratio or "16:9",
+                        resolution=request.resolution or "720p",
                     )
 
                     completed_clip = retry_clips[0]

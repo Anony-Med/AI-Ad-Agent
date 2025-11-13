@@ -19,16 +19,24 @@ class VideoCompositorAgent:
         self,
         video_urls: List[str],
         output_path: Optional[str] = None,
+        use_streaming: bool = True,
+        try_gcsfuse: bool = False,
     ) -> str:
         """
         Merge all video clips into one.
 
         Args:
-            video_urls: List of video URLs from Veo
+            video_urls: List of video URLs from Veo (GCS signed URLs)
             output_path: Optional output path
+            use_streaming: Use HTTP streaming (no downloads). Default: True
+            try_gcsfuse: Try GCS Fuse if available. Default: False
 
         Returns:
             Path to merged video
+
+        Note:
+            Default behavior (use_streaming=True) eliminates downloads.
+            Set try_gcsfuse=True to use GCS Fuse if available (requires gcsfuse installed).
         """
         if not output_path:
             output_path = tempfile.NamedTemporaryFile(
@@ -38,10 +46,27 @@ class VideoCompositorAgent:
 
         logger.info(f"Merging {len(video_urls)} video clips")
 
+        # Try GCS Fuse first if requested
+        if try_gcsfuse:
+            try:
+                logger.info("Attempting to use GCS Fuse for merging...")
+                merged_path = await self.video_processor.merge_videos_with_gcsfuse(
+                    video_urls=video_urls,
+                    output_path=output_path,
+                    include_audio=True,
+                )
+                logger.info(f"✅ Merged video with GCS Fuse (ZERO downloads): {merged_path}")
+                return merged_path
+            except Exception as e:
+                logger.warning(f"GCS Fuse merge failed, falling back to streaming: {e}")
+                # Fall through to streaming mode
+
+        # Use HTTP streaming mode (no downloads)
         merged_path = await self.video_processor.merge_videos(
             video_urls=video_urls,
             output_path=output_path,
             include_audio=True,
+            use_streaming=use_streaming,
         )
 
         logger.info(f"Merged video saved to {merged_path}")

@@ -8,16 +8,13 @@ BASE_URL = "https://ai-ad-agent-994684344365.europe-west1.run.app"
 AVATAR_PATH = r"C:\Users\shrey\Desktop\projects\ai ad agent\Avatar.png"
 
 script = """
-Hey there, I'm Heather, and I want to share something that's been a game-changer for me.
-
-You know that feeling when your skin just isn't cooperating? I've been there too. But then I discovered Radiant Glow Serum.
-
-This little bottle has completely transformed my skincare routine. Within just two weeks, I noticed my skin looking brighter and feeling smoother.
-
-The best part? It's made with natural ingredients that actually work. No harsh chemicals, just pure goodness for your skin.
-
-If you're ready to see real results, give Radiant Glow Serum a try. Your skin will thank you.
-"""
+    Tired of hurricanes, repairs, or just ready for a change? 
+    Hi, I’m Heather with She Buys Houses — a woman-owned company helping homeowners sell as-is. 
+    No repairs. No waiting. No stress. 
+    Whether you’re downsizing, moving closer to family, or simply ready to let go — you deserve a fair cash offer and a seamless, easy process.
+    Call 1-888-SHE-BUYS or visit SheBuysHousesCash.com. 
+    We’ll take care of everything — so you can move forward with peace of mind.
+    """
 
 async def test_cloud_run_ad():
     """Test the Cloud Run /create-stream-upload endpoint."""
