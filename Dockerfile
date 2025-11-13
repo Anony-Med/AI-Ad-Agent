@@ -51,9 +51,10 @@ RUN apt-get update && apt-get install -y \
 
 # Install gcsfuse for GCS Fuse mounting (Option 1)
 # This allows FFmpeg to read videos directly from GCS without downloading
+# Using modern GPG key method (apt-key is deprecated)
 RUN export GCSFUSE_REPO=gcsfuse-`lsb_release -c -s` \
-    && echo "deb https://packages.cloud.google.com/apt $GCSFUSE_REPO main" | tee /etc/apt/sources.list.d/gcsfuse.list \
-    && curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add - \
+    && echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt $GCSFUSE_REPO main" | tee /etc/apt/sources.list.d/gcsfuse.list \
+    && curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg \
     && apt-get update \
     && apt-get install -y gcsfuse \
     && rm -rf /var/lib/apt/lists/* \
