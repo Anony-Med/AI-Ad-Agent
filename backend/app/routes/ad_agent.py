@@ -343,6 +343,8 @@ async def create_ad_stream(
 
     async def event_generator() -> AsyncGenerator[str, None]:
         """Generate Server-Sent Events with progress updates."""
+        import time
+
         try:
             # Convert to full AdRequest
             ad_request = AdRequest(
@@ -386,18 +388,35 @@ async def create_ad_stream(
             # Start background task
             task = asyncio.create_task(create_ad_task())
 
-            # Stream events
+            # Track last event time for keepalive
+            last_event_time = time.time()
+
+            # Stream events with keepalive to prevent timeout
+            # SSE connections can timeout after 2-5 minutes of inactivity
+            # Send keepalive comments every 15 seconds to keep connection alive
             while True:
-                event = await progress_queue.get()
-                if event is None:  # End signal
-                    break
+                try:
+                    # Wait for event with timeout for keepalive
+                    event = await asyncio.wait_for(progress_queue.get(), timeout=15.0)
 
-                # Format as SSE
-                event_name = event["event"]
-                event_data = json.dumps(event["data"])
+                    if event is None:  # End signal
+                        break
 
-                yield f"event: {event_name}\n"
-                yield f"data: {event_data}\n\n"
+                    # Update last event time
+                    last_event_time = time.time()
+
+                    # Format as SSE
+                    event_name = event["event"]
+                    event_data = json.dumps(event["data"])
+
+                    yield f"event: {event_name}\n"
+                    yield f"data: {event_data}\n\n"
+
+                except asyncio.TimeoutError:
+                    # No event in 15 seconds - send keepalive comment
+                    # SSE comments (lines starting with :) keep connection alive without triggering events
+                    yield f": keepalive {int(time.time())}\n\n"
+                    logger.debug(f"Sent keepalive at {int(time.time())}")
 
             # Wait for task to complete
             await task
@@ -476,6 +495,8 @@ async def create_ad_stream_with_upload(
 
     async def event_generator() -> AsyncGenerator[str, None]:
         """Generate Server-Sent Events with progress updates."""
+        import time
+
         try:
             # Read uploaded file and convert to base64
             avatar_bytes = await avatar.read()
@@ -532,18 +553,35 @@ async def create_ad_stream_with_upload(
             # Start background task
             task = asyncio.create_task(create_ad_task())
 
-            # Stream events
+            # Track last event time for keepalive
+            last_event_time = time.time()
+
+            # Stream events with keepalive to prevent timeout
+            # SSE connections can timeout after 2-5 minutes of inactivity
+            # Send keepalive comments every 15 seconds to keep connection alive
             while True:
-                event = await progress_queue.get()
-                if event is None:  # End signal
-                    break
+                try:
+                    # Wait for event with timeout for keepalive
+                    event = await asyncio.wait_for(progress_queue.get(), timeout=15.0)
 
-                # Format as SSE
-                event_name = event["event"]
-                event_data = json.dumps(event["data"])
+                    if event is None:  # End signal
+                        break
 
-                yield f"event: {event_name}\n"
-                yield f"data: {event_data}\n\n"
+                    # Update last event time
+                    last_event_time = time.time()
+
+                    # Format as SSE
+                    event_name = event["event"]
+                    event_data = json.dumps(event["data"])
+
+                    yield f"event: {event_name}\n"
+                    yield f"data: {event_data}\n\n"
+
+                except asyncio.TimeoutError:
+                    # No event in 15 seconds - send keepalive comment
+                    # SSE comments (lines starting with :) keep connection alive without triggering events
+                    yield f": keepalive {int(time.time())}\n\n"
+                    logger.debug(f"Sent keepalive at {int(time.time())}")
 
             # Wait for task to complete
             await task
