@@ -719,19 +719,10 @@ class AdCreationPipeline:
 
         logger.info(f"[{job.job_id}] Voice enhancement complete")
 
-        # STEP 4c: Download merged video and replace audio track
-        logger.info(f"[{job.job_id}] Downloading merged video for audio replacement...")
-
-        temp_video = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
-        async with httpx.AsyncClient() as client:
-            response = await client.get(job.merged_video_url)
-            response.raise_for_status()
-            with open(temp_video, 'wb') as f:
-                f.write(response.content)
-
+        # STEP 4c: Replace audio track (stream merged video from URL - no download!)
         logger.info(f"[{job.job_id}] Replacing audio track in video...")
         enhanced_video = await self.audio_agent.replace_audio_track(
-            video_path=temp_video,
+            video_path=job.merged_video_url,  # Pass URL directly - FFmpeg will stream it
             audio_path=temp_enhanced_audio,
         )
 
@@ -742,7 +733,7 @@ class AdCreationPipeline:
         job.final_video_url = enhanced_url
 
         # Cleanup
-        for path in [temp_video, extracted_audio, temp_enhanced_audio, enhanced_video]:
+        for path in [extracted_audio, temp_enhanced_audio, enhanced_video]:
             if os.path.exists(path):
                 os.remove(path)
 

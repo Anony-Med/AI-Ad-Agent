@@ -202,7 +202,6 @@ class AudioCompositorAgent:
             Path to extracted audio file (AAC format in .m4a container)
         """
         import subprocess
-        import httpx
 
         logger.info(f"Extracting audio from video: {video_path[:100]}...")
 
@@ -210,31 +209,12 @@ class AudioCompositorAgent:
         temp_audio = tempfile.NamedTemporaryFile(delete=False, suffix=".m4a")
         temp_audio.close()
 
-        # Check if input is URL or file path
-        temp_video = None
         try:
-            if video_path.startswith("http://") or video_path.startswith("https://"):
-                # Download video from URL first
-                logger.info("Downloading video from URL for audio extraction...")
-                temp_video = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
-                temp_video.close()
-
-                async with httpx.AsyncClient(timeout=180) as client:
-                    response = await client.get(video_path)
-                    response.raise_for_status()
-                    with open(temp_video.name, 'wb') as f:
-                        f.write(response.content)
-
-                logger.info(f"Downloaded {len(response.content)} bytes from URL")
-                input_path = temp_video.name
-            else:
-                # Use local file directly
-                input_path = video_path
-
+            # FFmpeg can handle URLs directly - no need to download!
             # Extract audio using ffmpeg (use AAC instead of MP3)
             cmd = [
                 "ffmpeg",
-                "-i", input_path,
+                "-i", video_path,  # FFmpeg streams from URLs automatically
                 "-vn",  # No video
                 "-acodec", "aac",  # Use AAC instead of libmp3lame
                 "-b:a", "192k",  # High quality bitrate
@@ -242,6 +222,7 @@ class AudioCompositorAgent:
                 temp_audio.name,
             ]
 
+            logger.info(f"Extracting audio via FFmpeg streaming (no download)...")
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -253,7 +234,9 @@ class AudioCompositorAgent:
                 logger.error(f"ffmpeg extraction error: {result.stderr}")
                 raise RuntimeError(f"Audio extraction failed: {result.stderr}")
 
-            logger.info(f"Audio extracted to {temp_audio.name}")
+            # Get file size for logging
+            audio_size = os.path.getsize(temp_audio.name)
+            logger.info(f"Extracted audio: {audio_size} bytes (~{audio_size / 1024 / 1024:.1f} MB)")
             return temp_audio.name
 
         except Exception as e:
@@ -261,17 +244,13 @@ class AudioCompositorAgent:
             if os.path.exists(temp_audio.name):
                 os.remove(temp_audio.name)
             raise
-        finally:
-            # Clean up temp video if we downloaded it
-            if temp_video and os.path.exists(temp_video.name):
-                os.remove(temp_video.name)
 
     async def replace_audio_track(self, video_path: str, audio_path: str) -> str:
         """
         Replace audio track in video with new audio.
 
         Args:
-            video_path: Path to video file
+            video_path: Path to video file OR signed URL
             audio_path: Path to new audio file
 
         Returns:
@@ -279,17 +258,18 @@ class AudioCompositorAgent:
         """
         import subprocess
 
-        logger.info(f"Replacing audio track in video: {video_path}")
+        logger.info(f"Replacing audio track in video: {video_path[:100]}...")
 
         # Create temp file for output video
         temp_video = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
         temp_video.close()
 
         try:
+            # FFmpeg can stream from URLs - no need to download!
             # Replace audio using ffmpeg
             cmd = [
                 "ffmpeg",
-                "-i", video_path,  # Input video
+                "-i", video_path,  # Input video (URL or file path)
                 "-i", audio_path,  # Input audio
                 "-c:v", "copy",  # Copy video stream (no re-encoding)
                 "-c:a", "aac",  # Encode audio as AAC
@@ -300,6 +280,7 @@ class AudioCompositorAgent:
                 temp_video.name,
             ]
 
+            logger.info(f"Replacing audio via FFmpeg streaming (no download)...")
             result = subprocess.run(
                 cmd,
                 capture_output=True,
@@ -311,7 +292,8 @@ class AudioCompositorAgent:
                 logger.error(f"ffmpeg replacement error: {result.stderr}")
                 raise RuntimeError(f"Audio replacement failed: {result.stderr}")
 
-            logger.info(f"Audio replaced, output: {temp_video.name}")
+            output_size = os.path.getsize(temp_video.name)
+            logger.info(f"Audio replaced, output: {temp_video.name} ({output_size / 1024 / 1024:.1f} MB)")
             return temp_video.name
 
         except Exception as e:
