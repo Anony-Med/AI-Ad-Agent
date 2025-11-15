@@ -442,75 +442,59 @@ class AdCreationPipeline:
                 "progress": 30 + int((i / total_clips) * 20)
             })
 
+            # Create background task to emit progress during long clip generation
+            async def emit_clip_sub_progress():
+                """Emit progress updates every 30 seconds during clip generation."""
+                sub_progress_steps = [15, 30, 45, 60, 75, 90]
+                for sub_pct in sub_progress_steps:
+                    await asyncio.sleep(30)  # Wait 30 seconds
+                    await self._emit_progress("step2_clip_progress", {
+                        "step": 2,
+                        "message": f"Generating clip {i+1}/{total_clips} ({sub_pct}%...)",
+                        "current_clip": i + 1,
+                        "total_clips": total_clips,
+                        "progress": 30 + int((i / total_clips) * 20),
+                        "sub_progress": sub_pct
+                    })
+
+            # Start progress updater in background
+            progress_task = asyncio.create_task(emit_clip_sub_progress())
+
             # RECOVERY MECHANISM: Check if clip already exists in GCS
             recovered_clip = await self._recover_existing_clip(job.job_id, job.user_id, i)
 
-            if recovered_clip:
-                # Use the recovered clip instead of generating a new one
-                logger.warning(f"[{job.job_id}] ⚠️ RESUMING FROM EXISTING CLIP {i} - Pipeline recovered from previous timeout/crash")
-                completed_clip = recovered_clip
-                # Skip to frame extraction and continue
-            else:
-                # Clip doesn't exist, generate it normally
-                # Save prompt to GCS
-                prompt_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".txt")
-                prompt_file.write(f"Script: {clip.script_segment}\n\nPrompt: {clip.prompt}")
-                prompt_file.close()
+            try:
+                if recovered_clip:
+                    # Use the recovered clip instead of generating a new one
+                    logger.warning(f"[{job.job_id}] ⚠️ RESUMING FROM EXISTING CLIP {i} - Pipeline recovered from previous timeout/crash")
+                    completed_clip = recovered_clip
+                    # Skip to frame extraction and continue
+                else:
+                    # Clip doesn't exist, generate it normally
+                    # Save prompt to GCS
+                    prompt_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix=".txt")
+                    prompt_file.write(f"Script: {clip.script_segment}\n\nPrompt: {clip.prompt}")
+                    prompt_file.close()
 
-                prompt_url = await self._save_checkpoint(
-                    job.job_id,
-                    job.user_id,
-                    prompt_file.name,
-                    f"prompts/clip_{i}_prompt.txt"
-                )
-                os.remove(prompt_file.name)
-                logger.info(f"[{job.job_id}] Saved prompt to GCS")
+                    prompt_url = await self._save_checkpoint(
+                        job.job_id,
+                        job.user_id,
+                        prompt_file.name,
+                        f"prompts/clip_{i}_prompt.txt"
+                    )
+                    os.remove(prompt_file.name)
+                    logger.info(f"[{job.job_id}] Saved prompt to GCS")
 
-                # Combine script and visual prompt for Veo (full context)
-                full_veo_prompt = f"Script/Dialogue: {clip.script_segment}\n\nVisual Description: {clip.prompt}"
-                logger.info(f"[{job.job_id}] Full Veo prompt length: {len(full_veo_prompt)} chars")
-                logger.info(f"[{job.job_id}] Full Veo prompt: {full_veo_prompt}")
+                    # Combine script and visual prompt for Veo (full context)
+                    full_veo_prompt = f"Script/Dialogue: {clip.script_segment}\n\nVisual Description: {clip.prompt}"
+                    logger.info(f"[{job.job_id}] Full Veo prompt length: {len(full_veo_prompt)} chars")
+                    logger.info(f"[{job.job_id}] Full Veo prompt: {full_veo_prompt}")
 
-                # Generate single clip with retry support
-                completed_clips = await self.video_agent.wait_for_all_clips(
-                    clips=await self.video_agent.generate_all_clips(
-                        prompts=[full_veo_prompt],
-                        character_image=current_image,
-                        duration=7,
-                        aspect_ratio=request.aspect_ratio or "16:9",
-                        resolution=request.resolution or "720p",
-                        max_concurrent=1,
-                        clip_number_offset=i,
-                    ),
-                    timeout=600,
-                    max_retries=3,  # Retry up to 3 times on timeout
-                    character_image=current_image,  # For retry
-                    prompts=[full_veo_prompt],  # For retry
-                    duration=7,
-                    aspect_ratio=request.aspect_ratio or "16:9",
-                    resolution=request.resolution or "720p",
-                )
-
-                completed_clip = completed_clips[0]
-
-                # RETRY LOGIC: If clip failed due to content policy, retry with original avatar
-                # Check for multiple content policy error patterns (not just one specific string)
-                is_content_policy_error = False
-                if completed_clip.status == "failed" and completed_clip.error:
-                    error_lower = completed_clip.error.lower()
-                    is_content_policy_error = any(phrase in error_lower for phrase in [
-                        "safety filter", "blocked by", "violates", "content policy",
-                        "usage guidelines", "inappropriate content"
-                    ])
-
-                if is_content_policy_error:
-                    logger.warning(f"[{job.job_id}] Clip {i} failed content policy check, retrying with original avatar...")
-
-                    # Retry with original avatar instead of extracted frame
-                    retry_clips = await self.video_agent.wait_for_all_clips(
+                    # Generate single clip with retry support
+                    completed_clips = await self.video_agent.wait_for_all_clips(
                         clips=await self.video_agent.generate_all_clips(
-                            prompts=[full_veo_prompt],  # Use same full prompt
-                            character_image=request.character_image,  # Use original avatar
+                            prompts=[full_veo_prompt],
+                            character_image=current_image,
                             duration=7,
                             aspect_ratio=request.aspect_ratio or "16:9",
                             resolution=request.resolution or "720p",
@@ -519,25 +503,68 @@ class AdCreationPipeline:
                         ),
                         timeout=600,
                         max_retries=3,  # Retry up to 3 times on timeout
-                        character_image=request.character_image,  # For retry
+                        character_image=current_image,  # For retry
                         prompts=[full_veo_prompt],  # For retry
                         duration=7,
                         aspect_ratio=request.aspect_ratio or "16:9",
                         resolution=request.resolution or "720p",
                     )
 
-                    completed_clip = retry_clips[0]
-                    if completed_clip.status == "completed":
-                        logger.info(f"[{job.job_id}] Clip {i} retry succeeded with original avatar")
-                        logger.info(f"[{job.job_id}] Retry clip status: {completed_clip.status}, has_video_b64: {bool(completed_clip.video_b64)}")
+                    completed_clip = completed_clips[0]
 
-                        # CRITICAL CHECK: Ensure retry actually returned video data
-                        if not completed_clip.video_b64:
-                            logger.error(f"[{job.job_id}] CRITICAL: Retry succeeded but no video_b64 data! Marking as failed.")
-                            completed_clip.status = "failed"
-                            completed_clip.error = "Retry succeeded but returned no video data"
-                    else:
-                        logger.error(f"[{job.job_id}] Clip {i} retry also failed: {completed_clip.error}")
+                    # RETRY LOGIC: If clip failed due to content policy, retry with original avatar
+                    # Check for multiple content policy error patterns (not just one specific string)
+                    is_content_policy_error = False
+                    if completed_clip.status == "failed" and completed_clip.error:
+                        error_lower = completed_clip.error.lower()
+                        is_content_policy_error = any(phrase in error_lower for phrase in [
+                            "safety filter", "blocked by", "violates", "content policy",
+                            "usage guidelines", "inappropriate content"
+                        ])
+
+                    if is_content_policy_error:
+                        logger.warning(f"[{job.job_id}] Clip {i} failed content policy check, retrying with original avatar...")
+
+                        # Retry with original avatar instead of extracted frame
+                        retry_clips = await self.video_agent.wait_for_all_clips(
+                            clips=await self.video_agent.generate_all_clips(
+                                prompts=[full_veo_prompt],  # Use same full prompt
+                                character_image=request.character_image,  # Use original avatar
+                                duration=7,
+                                aspect_ratio=request.aspect_ratio or "16:9",
+                                resolution=request.resolution or "720p",
+                                max_concurrent=1,
+                                clip_number_offset=i,
+                            ),
+                            timeout=600,
+                            max_retries=3,  # Retry up to 3 times on timeout
+                            character_image=request.character_image,  # For retry
+                            prompts=[full_veo_prompt],  # For retry
+                            duration=7,
+                            aspect_ratio=request.aspect_ratio or "16:9",
+                            resolution=request.resolution or "720p",
+                        )
+
+                        completed_clip = retry_clips[0]
+                        if completed_clip.status == "completed":
+                            logger.info(f"[{job.job_id}] Clip {i} retry succeeded with original avatar")
+                            logger.info(f"[{job.job_id}] Retry clip status: {completed_clip.status}, has_video_b64: {bool(completed_clip.video_b64)}")
+
+                            # CRITICAL CHECK: Ensure retry actually returned video data
+                            if not completed_clip.video_b64:
+                                logger.error(f"[{job.job_id}] CRITICAL: Retry succeeded but no video_b64 data! Marking as failed.")
+                                completed_clip.status = "failed"
+                                completed_clip.error = "Retry succeeded but returned no video data"
+                        else:
+                            logger.error(f"[{job.job_id}] Clip {i} retry also failed: {completed_clip.error}")
+
+            finally:
+                # Stop progress updater task
+                progress_task.cancel()
+                try:
+                    await progress_task
+                except asyncio.CancelledError:
+                    pass
 
             # Update all_clips with either recovered or newly generated clip
             all_clips[i] = completed_clip
@@ -613,6 +640,15 @@ class AdCreationPipeline:
         job.updated_at = datetime.utcnow()
         await self._save_job(job)
 
+        # Emit step2 completion event
+        await self._emit_progress("step2_complete", {
+            "step": 2,
+            "message": f"Completed all {total_clips} clips successfully",
+            "progress": 50,
+            "current_clip": total_clips,
+            "total_clips": total_clips
+        })
+
         return job
 
     async def _step3_merge_videos_simple(self, job: AdJob) -> AdJob:
@@ -661,6 +697,13 @@ class AdCreationPipeline:
         job.progress = 70
         job.updated_at = datetime.utcnow()
         await self._save_job(job)
+
+        # Emit step3 completion event
+        await self._emit_progress("step3_complete", {
+            "step": 3,
+            "message": "Video clips merged successfully",
+            "progress": 70
+        })
 
         return job
 
@@ -742,6 +785,13 @@ class AdCreationPipeline:
         job.updated_at = datetime.utcnow()
         await self._save_job(job)
 
+        # Emit step4 completion event
+        await self._emit_progress("step4_complete", {
+            "step": 4,
+            "message": "Voice enhancement complete",
+            "progress": 90
+        })
+
         return job
 
     async def _step5_finalize_simple(self, job: AdJob, user_id: str) -> AdJob:
@@ -782,6 +832,13 @@ class AdCreationPipeline:
         job.progress = 100
         job.updated_at = datetime.utcnow()
         await self._save_job(job)
+
+        # Emit step5 completion event
+        await self._emit_progress("step5_complete", {
+            "step": 5,
+            "message": "Video finalized",
+            "progress": 99
+        })
 
         logger.info(f"[{job.job_id}] Ad creation complete!")
         return job
