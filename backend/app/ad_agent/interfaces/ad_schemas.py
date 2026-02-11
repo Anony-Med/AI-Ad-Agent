@@ -66,7 +66,7 @@ class AdRequest(BaseModel):
     script: str = Field(..., description="The dialogue/script for the ad")
     character_image: str = Field(..., description="Base64 encoded image of the character (e.g., Heather)")
     character_name: Optional[str] = Field(default="character", description="Name of the character")
-    voice_id: Optional[str] = Field(default=None, description="ElevenLabs voice ID (e.g., Heather Bryant)")
+    voice_id: Optional[str] = Field(default=None, description="ElevenLabs voice ID (e.g., Bella)")
     background_music_prompt: Optional[str] = Field(default=None, description="Prompt for background music")
     add_sound_effects: bool = Field(default=True, description="Whether to add sound effects")
     aspect_ratio: str = Field(default="16:9", description="Aspect ratio for videos")

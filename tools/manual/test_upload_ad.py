@@ -8,21 +8,13 @@ async def test_upload_ad():
     """Test the /create-stream-upload endpoint with file upload."""
 
     # Configuration
-    BASE_URL = "http://localhost:8001"
-    AVATAR_PATH = r"C:\Users\shrey\Desktop\projects\ai ad agent\Avatar.png"
+    BASE_URL = "http://localhost:8000"
+    AVATAR_PATH = r"/Users/ar2427/Downloads/WhatsApp Image 2026-01-13 at 12.56.03.jpeg"
 
     # Script for the ad
-    script = """Tired of hurricanes, repairs, or just ready for a change?
+    script = """I Was Done Stressing Over Repairs. 
 
-Hi, I'm Heather with She Buys Houses - a woman-owned company helping homeowners sell as-is.
-
-No repairs. No waiting. No stress.
-
-Whether you're downsizing, moving closer to family, or simply ready to let go - you deserve a fair cash offer and a seamless, easy process.
-
-Call 1-888-SHE-BUYS or visit SheBuysHousesCash.com.
-
-We'll take care of everything - so you can move forward with peace of mind."""
+Stop worrying. Get your free offer at shebuyshousescash.com or call 1-888-SHE-BUYS."""
 
     print("=" * 80)
     print("🎬 AI Ad Agent - File Upload Test (EASIER!)")

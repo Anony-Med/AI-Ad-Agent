@@ -205,7 +205,7 @@ Each paragraph will become a video segment.
 avatar_path = r"C:\path\to\your\Avatar.png"
 
 # 3. OPTIONAL: Customize voice
-# Leave as None to use default "Heather Bryant" voice
+# Leave as None to use default "Bella" voice
 # Or specify voice_id from ElevenLabs
 voice_id = None  # or "voice_id_here"
 
@@ -358,7 +358,7 @@ When you run `python run_ad.py`, the system goes through 5 steps:
 
 **Step 4: Voice Enhancement (30-60 seconds)**
 - ElevenLabs enhances the voice quality
-- Applies professional voice (default: "Heather Bryant")
+- Applies professional voice (default: "Bella")
 - Replaces audio track in merged video
 
 **Step 5: Finalize (10-20 seconds)**
@@ -391,7 +391,7 @@ sudo apt-get install ffmpeg
 - **Solution:** System automatically retries with original avatar
 - **If persists:** Try a different avatar image with neutral background
 
-**Issue:** "Voice 'Heather Bryant' not found"
+**Issue:** "Voice 'Bella' not found"
 - **Why:** Voice not available in your ElevenLabs account
 - **Solution:**
   1. Use `voice_id=None` to use default voice

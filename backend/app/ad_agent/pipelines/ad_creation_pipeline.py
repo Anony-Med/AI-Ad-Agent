@@ -253,7 +253,6 @@ class AdCreationPipeline:
 
         # Reinitialize prompt_agent with storage client, job_id, and user_id for GCS logging
         self.prompt_agent = PromptGeneratorAgent(
-            api_key=self.prompt_agent.gemini.api_key,
             storage_client=self.storage,
             job_id=job_id,
             user_id=user_id
@@ -732,10 +731,10 @@ class AdCreationPipeline:
         if request.voice_id:
             voice_id = request.voice_id
         else:
-            # Try to find "Heather Bryant" voice
-            voice_id = await self.audio_agent.elevenlabs.find_voice_by_name("Heather Bryant")
+            # Try to find "Bella" voice
+            voice_id = await self.audio_agent.elevenlabs.find_voice_by_name("Bella")
             if not voice_id:
-                logger.warning("Heather Bryant voice not found, skipping voice enhancement")
+                logger.warning("Bella voice not found, skipping voice enhancement")
                 job.final_video_url = job.merged_video_url
                 return job
 

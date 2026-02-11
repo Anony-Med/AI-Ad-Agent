@@ -20,7 +20,7 @@ class AudioCompositorAgent:
         self,
         script: str,
         voice_id: Optional[str] = None,
-        voice_name: Optional[str] = "Heather Bryant",
+        voice_name: Optional[str] = "Bella",
     ) -> str:
         """
         Generate voiceover for the script.
@@ -130,7 +130,7 @@ class AudioCompositorAgent:
         self,
         script_segments: List[str],
         voice_id: Optional[str] = None,
-        voice_name: Optional[str] = "Heather Bryant",
+        voice_name: Optional[str] = "Bella",
     ) -> List[Dict]:
         """
         Generate voiceover and segment it based on script segments.

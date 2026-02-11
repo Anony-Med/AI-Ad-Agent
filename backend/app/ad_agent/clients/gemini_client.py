@@ -1,4 +1,4 @@
-"""Direct Gemini API client for text/chat generation."""
+"""Unified API Gemini client for text/chat generation."""
 import os
 import logging
 import json
@@ -11,28 +11,31 @@ logger = logging.getLogger(__name__)
 
 
 class GeminiClient:
-    """Client for Google Gemini AI text generation."""
+    """Client for Google Gemini AI text generation via Unified API."""
 
     def __init__(self, api_key: Optional[str] = None, storage_client=None, job_id: Optional[str] = None, user_id: Optional[str] = None):
         """
         Initialize Gemini client.
 
         Args:
-            api_key: Google AI API key. If not provided, reads from environment.
+            api_key: Deprecated - now uses Unified API with JWT auth
             storage_client: Optional GCS storage client for saving prompts/responses
             job_id: Optional job ID for GCS logging
             user_id: Optional user ID for GCS logging
         """
-        self.api_key = api_key or os.getenv("GOOGLE_AI_API_KEY") or os.getenv("GEMINI_API_KEY")
-        if not self.api_key:
-            raise ValueError("GOOGLE_AI_API_KEY or GEMINI_API_KEY environment variable required")
-
-        self.base_url = "https://generativelanguage.googleapis.com/v1beta"
-        self.model = "gemini-2.0-flash-exp"  # Fast and efficient
+        # Get Unified API configuration
+        from app.config import settings
+        self.unified_api_url = settings.UNIFIED_API_BASE_URL
+        self.model = "gemini-3-flash-preview"  # Latest Gemini 3
         self.timeout = 120
         self.storage = storage_client
         self.job_id = job_id
         self.user_id = user_id
+
+        # Use the singleton Unified API client (already authenticated via middleware)
+        from app.services.unified_api_client import unified_api_client
+        self.unified_client = unified_api_client
+        self.jwt_token = None
 
     async def _save_to_gcs(self, filename: str, data: dict):
         """Save data to GCS for debugging and analysis."""
@@ -55,6 +58,18 @@ class GeminiClient:
         except Exception as e:
             logger.warning(f"Failed to save to GCS: {e}")
 
+    async def _get_jwt_token(self) -> str:
+        """Get JWT token from Unified API (uses token set by auth middleware)."""
+        if self.jwt_token:
+            return self.jwt_token
+
+        # Use the token already set on the singleton client by the auth middleware
+        if self.unified_client._token:
+            self.jwt_token = self.unified_client._token
+            return self.jwt_token
+
+        raise AttributeError("No JWT token available. User must be authenticated first.")
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
@@ -67,7 +82,7 @@ class GeminiClient:
         max_tokens: int = 2048,
     ) -> str:
         """
-        Generate text using Gemini.
+        Generate text using Gemini via Unified API.
 
         Args:
             prompt: The user prompt
@@ -78,35 +93,40 @@ class GeminiClient:
         Returns:
             Generated text response
         """
-        url = f"{self.base_url}/models/{self.model}:generateContent?key={self.api_key}"
+        url = f"{self.unified_api_url}/v1/text"
 
-        # Build request payload
-        contents = [{"role": "user", "parts": [{"text": prompt}]}]
-
+        # Build request payload for Unified API
         payload: Dict[str, Any] = {
-            "contents": contents,
-            "generationConfig": {
-                "temperature": temperature,
-                "maxOutputTokens": max_tokens,
-            },
+            "model": self.model,
+            "prompt": prompt,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "response_format": "text",
         }
 
         if system_instruction:
-            payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
+            payload["system_instruction"] = system_instruction
+
+        # Get JWT token for authentication
+        jwt_token = await self._get_jwt_token()
 
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             try:
-                response = await client.post(url, json=payload)
+                response = await client.post(
+                    url,
+                    json=payload,
+                    headers={"Authorization": f"Bearer {jwt_token}"}
+                )
                 response.raise_for_status()
 
                 result = response.json()
-                text = result["candidates"][0]["content"]["parts"][0]["text"]
+                text = result["text"]
 
-                logger.info(f"Gemini generated {len(text)} characters")
+                logger.info(f"Gemini (via Unified API) generated {len(text)} characters using model {result.get('model', self.model)}")
                 return text
 
             except httpx.HTTPStatusError as e:
-                logger.error(f"Gemini API error: {e.response.status_code} - {e.response.text}")
+                logger.error(f"Unified API Gemini error: {e.response.status_code} - {e.response.text}")
                 raise
             except Exception as e:
                 logger.error(f"Gemini request failed: {e}")
