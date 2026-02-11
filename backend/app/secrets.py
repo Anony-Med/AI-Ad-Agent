@@ -28,16 +28,20 @@ PROJECT_ID = os.getenv("GCP_PROJECT_ID", "sound-invention-432122-m5")
 
 # Initialize Secret Manager client (singleton)
 _client = None
+_client_init_failed = False
 
 
-def get_client() -> secretmanager.SecretManagerServiceClient:
+def get_client() -> Optional[secretmanager.SecretManagerServiceClient]:
     """
     Get or create the Secret Manager client (singleton pattern).
 
     Returns:
         SecretManagerServiceClient instance
     """
-    global _client
+    global _client, _client_init_failed
+    if _client_init_failed:
+        return None
+
     if _client is None:
         try:
             _client = secretmanager.SecretManagerServiceClient()
@@ -45,6 +49,7 @@ def get_client() -> secretmanager.SecretManagerServiceClient:
         except Exception as e:
             logger.error(f"Failed to initialize Secret Manager client: {e}")
             _client = None
+            _client_init_failed = True
     return _client
 
 
