@@ -145,6 +145,11 @@ python main.py
 # Health Check: http://localhost:8000/api/ad-agent/health
 ```
 
+
+### Repository Utilities
+
+Operational/debug scripts (job monitors, log checkers, manual endpoint tests) are located in `tools/manual/` to keep the project root focused on product code.
+
 ## 🧪 Testing
 
 For comprehensive testing instructions, see **[docs/TEST_README.md](./docs/TEST_README.md)**.
