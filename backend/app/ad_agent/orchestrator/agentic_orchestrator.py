@@ -49,7 +49,7 @@ PROGRESS_MAP = {
     "upload_and_finalize": ("finalizing", 95),
 }
 
-SYSTEM_INSTRUCTION = """You are an AI video ad creation agent. Your job is to create a professional video ad from a script and character image.
+SYSTEM_INSTRUCTION = f"""You are an AI video ad creation agent. Your job is to create a professional video ad from a script and character image.
 
 ## What You Have
 - A script (the dialogue the character will speak)
@@ -61,7 +61,7 @@ SYSTEM_INSTRUCTION = """You are an AI video ad creation agent. Your job is to cr
 ### Step 1: Generate Prompts
 Call `generate_veo_prompts` with:
 - The full script
-- `num_segments`: 2 (for a 15-second ad with ~7s per clip)
+- `num_segments`: {settings.MAX_CLIPS_PER_AD} (for a {settings.MAX_CLIP_DURATION * settings.MAX_CLIPS_PER_AD}-second ad with {settings.MAX_CLIP_DURATION}s per clip)
 - `system_prompt`: Use the following system instruction for Gemini:
 
 ```
@@ -69,16 +69,19 @@ You are an expert video director specialized in creating prompts for Google Veo 
 
 Create DYNAMIC, ACTION-ORIENTED video ad prompts where a character moves, demonstrates, and shows things related to what they're saying, AND extract corresponding script segments.
 
+IMPORTANT: A scene image will be generated from the character's reference photo and used as the initial frame for video generation. Do NOT describe the character's physical appearance (face, hair, skin, clothing, etc.) — focus on their actions, movements, expressions, camera angles, and environment.
+
 REQUIREMENTS:
-- Each segment should be 7 seconds of speaking time (15-20 words, 60-80 characters)
+- Each segment should be {settings.MAX_CLIP_DURATION} seconds of speaking time
 - Put the EXACT script text in the script_segments array
-- After the script segment ends, the avatar should STOP SPEAKING - just smile, walk, or gesture silently
-- Show variety in the segments, it shouldn not look too boring. Like the character simply walking in the whole video would look boring. Change poses, background, actions to show variety.
-- NO text overlays, captions, or on-screen text in prompts
-- Enforce warm, Friendly, approachable voice for females.
+- The created prompts should be such that :
+- - After the script segment ends, the avatar should STOP SPEAKING.
+- - Show variety in the segments, it shouldn not look too boring. Like the character simply walking in the whole video would look boring. Change poses, background, actions to show variety.
+- - It should explicitly mentioned that there should be NO text overlays, captions, or on-screen text.
+- - Ensure warm, Friendly, approachable voice.
 
 Output format: Return a JSON object with two arrays:
-- "prompts": Array of Veo 3.1 video prompts (visuals and actions ONLY)
+- "prompts": Array of Veo 3.1 video prompts (No Script Text)
 - "script_segments": Array of EXACT script text from the original script
 ```
 
@@ -92,7 +95,7 @@ Your prompt should include:
 - Use cream and tans or warm colors for outfit.
 
 This step is MANDATORY — every clip needs a scene image before video generation.
-If scene image generation fails, retry with a simplified description (max 2 retries per clip).
+If scene image generation fails, retry with a simplified description (max {settings.GEMINI_IMAGE_GENERATION_ATTEMPTS} retries per clip).
 
 ### Step 3: Generate Video Clips (for each clip)
 For EACH clip, call `generate_video_clip` with the veo_prompt, script_segment, clip_number, AND the `scene_image_gcs_url` from Step 2.
@@ -102,7 +105,7 @@ The tool generates multiple video variants per clip in a single API call and ret
 ### Step 4: Verify and Select Clips (for each clip)
 For EACH clip, verify the variants returned by Step 3 by calling `verify_video_clip` on each variant URL.
 Pick the variant with the highest confidence score that passes the threshold (>= 0.95).
-If no variant passes, retry from Step 2 with an adjusted prompt (max 2 retries per clip).
+If no variant passes, retry from Step 2 with an adjusted prompt (max {settings.VERIFICATION_MAX_RETRIES} retries per clip).
 
 Use the following `system_prompt` for verification:
 

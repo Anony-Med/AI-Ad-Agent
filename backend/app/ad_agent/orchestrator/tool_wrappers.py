@@ -322,6 +322,26 @@ async def tool_verify_video_clip(ctx: ToolContext, params: Dict[str, Any]) -> Di
             "description": verification.description or "",
         }
 
+        # Save verification log to GCS
+        try:
+            import json as _json
+            log_data = {
+                "clip_number": clip_number,
+                "variant_index": variant_index,
+                "clip_gcs_url": clip_gcs_url,
+                "verified": verification.verified,
+                "confidence_score": verification.confidence_score,
+                "description": verification.description or "",
+                "script_segment": script_segment,
+                "veo_prompt": veo_prompt,
+            }
+            gcs_path = f"{ctx.user_id}/{ctx.job_id}/verification_logs/clip_{clip_number}_v{variant_index}.json"
+            blob = ctx.storage.bucket.blob(gcs_path)
+            blob.upload_from_string(_json.dumps(log_data, indent=2), content_type="application/json")
+            logger.info(f"[{ctx.job_id}] Saved verification log to gs://{gcs_path}")
+        except Exception as log_err:
+            logger.warning(f"[{ctx.job_id}] Failed to save verification log: {log_err}")
+
         logger.info(
             f"[{ctx.job_id}] Clip {clip_number} verification: "
             f"verified={verification.verified}, score={verification.confidence_score:.2f}"

@@ -94,14 +94,14 @@ class Settings(BaseSettings):
     # Video Generation (Veo)
     # ──────────────────────────────────────────────
     VEO_DEFAULT_ASPECT_RATIO: str = "16:9"
-    VEO_DEFAULT_RESOLUTION: str = "720p"
+    VEO_DEFAULT_RESOLUTION: str = "1080p"
     VEO_PERSON_GENERATION: str = "allow_all"
     VEO_ADD_WATERMARK: bool = True
     VEO_SAMPLE_COUNT: int = 4
-    DEFAULT_CLIP_DURATION: int = 7
+    DEFAULT_CLIP_DURATION: int = 8
     MAX_CLIP_DURATION: int = 8
     MAX_CLIPS_PER_AD: int = 2
-    MAX_AD_DURATION_SECONDS: int = 15
+    MAX_CLIP_RETRIES: int = 3
 
     # ──────────────────────────────────────────────
     # Image Optimization
@@ -147,12 +147,13 @@ class Settings(BaseSettings):
     GEMINI_IMAGE_MAX_TOKENS: int = 32768
     GEMINI_IMAGE_SIZE: str = "1K"
     GEMINI_IMAGE_OUTPUT_MIME: str = "image/png"
+    GEMINI_IMAGE_GENERATION_ATTEMPTS: int = 3
 
     # ──────────────────────────────────────────────
     # Clip Verification
     # ──────────────────────────────────────────────
     VERIFICATION_THRESHOLD: float = 0.6
-    MAX_CLIP_RETRIES: int = 3
+    VERIFICATION_MAX_RETRIES: int = 3
 
     # ──────────────────────────────────────────────
     # Video Composition
