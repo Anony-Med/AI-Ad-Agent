@@ -28,15 +28,15 @@ class StreamAdRequest(BaseModel):
     character_image: str = Field(..., description="Base64-encoded character image (data:image/png;base64,...)")
     character_name: Optional[str] = Field("character", description="Name of the character")
     voice_id: Optional[str] = Field(None, description="ElevenLabs voice ID (optional, uses default if not provided)")
-    aspect_ratio: Optional[str] = Field("16:9", description="Video aspect ratio")
-    resolution: Optional[str] = Field("720p", description="Video resolution")
+    aspect_ratio: Optional[str] = Field(default_factory=lambda: settings.VEO_DEFAULT_ASPECT_RATIO, description="Video aspect ratio")
+    resolution: Optional[str] = Field(default_factory=lambda: settings.VEO_DEFAULT_RESOLUTION, description="Video resolution")
 
 
 # Initialize pipeline (will be created per request to support different settings and user keys)
 def get_pipeline(
     user_id: str,
     enable_verification: bool = True,
-    verification_threshold: float = 0.6
+    verification_threshold: Optional[float] = None,
 ) -> AdCreationPipeline:
     """
     Get pipeline instance with API keys from Secret Manager.
@@ -61,6 +61,13 @@ def get_pipeline(
 
     elevenlabs_key = get_user_secret(user_id, "elevenlabs", "api_key")
 
+    # Anthropic API key (for agentic orchestrator)
+    anthropic_key = get_user_secret(user_id, "anthropic", "api_key")
+    if not anthropic_key:
+        anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+        if anthropic_key:
+            logger.info(f"Using environment variable for Anthropic API key (user {user_id})")
+
     # Fall back to environment variables if Secret Manager not available
     if not gemini_key:
         gemini_key = os.getenv("GOOGLE_AI_API_KEY") or os.getenv("GEMINI_API_KEY")
@@ -70,13 +77,14 @@ def get_pipeline(
         elevenlabs_key = os.getenv("ELEVENLABS_API_KEY")
         logger.warning(f"Using environment variable for ElevenLabs API key (user {user_id})")
 
-    logger.info(f"Pipeline initialized for user {user_id} with verification={enable_verification}")
+    logger.info(f"Pipeline initialized for user {user_id} with verification={enable_verification}, anthropic={'yes' if anthropic_key else 'no'}")
 
     return AdCreationPipeline(
         gemini_api_key=gemini_key,
         elevenlabs_api_key=elevenlabs_key,
+        anthropic_api_key=anthropic_key,
         enable_verification=enable_verification,
-        verification_threshold=verification_threshold,
+        verification_threshold=verification_threshold if verification_threshold is not None else settings.VERIFICATION_THRESHOLD,
     )
 
 
@@ -126,14 +134,23 @@ async def create_ad(
             verification_threshold=request.verification_threshold,
         )
 
-        # Start job in background
+        # Start job in background — use agentic pipeline if Anthropic key is available
         job_id = f"ad_{int(__import__('time').time() * 1000)}"
 
-        background_tasks.add_task(
-            pipeline.create_ad,
-            request=request,
-            user_id=user_id,
-        )
+        if pipeline.anthropic_api_key:
+            logger.info(f"Using AGENTIC pipeline for ad creation (user {user_id})")
+            background_tasks.add_task(
+                pipeline.create_ad_agentic,
+                request=request,
+                user_id=user_id,
+            )
+        else:
+            logger.info(f"Using LEGACY pipeline for ad creation (user {user_id})")
+            background_tasks.add_task(
+                pipeline.create_ad,
+                request=request,
+                user_id=user_id,
+            )
 
         logger.info(f"Ad creation job started: {job_id}")
 
@@ -295,12 +312,22 @@ async def ad_agent_health():
     """
     gemini_key = os.getenv("GOOGLE_AI_API_KEY") or os.getenv("GEMINI_API_KEY")
     elevenlabs_key = os.getenv("ELEVENLABS_API_KEY")
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+
+    # Also check Secret Manager for Anthropic key
+    if not anthropic_key:
+        try:
+            from app.secrets import get_secret
+            anthropic_key = get_secret("ai_ad_agent_anthropic_api_key")
+        except Exception:
+            pass
 
     return {
         "status": "healthy",
         "gemini_configured": bool(gemini_key),
         "elevenlabs_configured": bool(elevenlabs_key),
-        "unified_api_url": settings.UNIFIED_API_BASE_URL,
+        "anthropic_configured": bool(anthropic_key),
+        "pipeline_mode": "agentic" if anthropic_key else "legacy",
     }
 
 
@@ -368,10 +395,15 @@ async def create_ad_stream(
             pipeline = get_pipeline(user_id=user_id)
             pipeline.progress_callback = progress_callback
 
-            # Start ad creation in background
+            # Start ad creation in background — use agentic if available
             async def create_ad_task():
                 try:
-                    job = await pipeline.create_ad(ad_request, user_id)
+                    if pipeline.anthropic_api_key:
+                        logger.info("Using AGENTIC pipeline for streaming ad creation")
+                        job = await pipeline.create_ad_agentic(ad_request, user_id)
+                    else:
+                        logger.info("Using LEGACY pipeline for streaming ad creation")
+                        job = await pipeline.create_ad(ad_request, user_id)
                     await progress_queue.put({"event": "complete", "data": {
                         "status": job.status.value if hasattr(job.status, 'value') else job.status,
                         "final_video_url": job.final_video_url,
@@ -397,7 +429,7 @@ async def create_ad_stream(
             while True:
                 try:
                     # Wait for event with timeout for keepalive
-                    event = await asyncio.wait_for(progress_queue.get(), timeout=15.0)
+                    event = await asyncio.wait_for(progress_queue.get(), timeout=settings.SSE_KEEPALIVE_SECONDS)
 
                     if event is None:  # End signal
                         break
@@ -444,8 +476,8 @@ async def create_ad_stream_with_upload(
     avatar: UploadFile = File(..., description="Avatar image file (PNG, JPG)"),
     character_name: Optional[str] = Form("character", description="Name of the character"),
     voice_id: Optional[str] = Form(None, description="ElevenLabs voice ID"),
-    aspect_ratio: Optional[str] = Form("16:9", description="Video aspect ratio"),
-    resolution: Optional[str] = Form("720p", description="Video resolution"),
+    aspect_ratio: Optional[str] = Form(None, description="Video aspect ratio"),
+    resolution: Optional[str] = Form(None, description="Video resolution"),
     user_id: str = Depends(get_current_user_id),
 ):
     """
@@ -518,8 +550,8 @@ async def create_ad_stream_with_upload(
                 character_image=avatar_data_uri,
                 character_name=character_name,
                 voice_id=voice_id,
-                aspect_ratio=aspect_ratio,
-                resolution=resolution,
+                aspect_ratio=aspect_ratio or settings.VEO_DEFAULT_ASPECT_RATIO,
+                resolution=resolution or settings.VEO_DEFAULT_RESOLUTION,
             )
 
             # Progress callback queue
@@ -533,10 +565,15 @@ async def create_ad_stream_with_upload(
             pipeline = get_pipeline(user_id=user_id)
             pipeline.progress_callback = progress_callback
 
-            # Start ad creation in background
+            # Start ad creation in background — use agentic if available
             async def create_ad_task():
                 try:
-                    job = await pipeline.create_ad(ad_request, user_id)
+                    if pipeline.anthropic_api_key:
+                        logger.info("Using AGENTIC pipeline for streaming upload ad creation")
+                        job = await pipeline.create_ad_agentic(ad_request, user_id)
+                    else:
+                        logger.info("Using LEGACY pipeline for streaming upload ad creation")
+                        job = await pipeline.create_ad(ad_request, user_id)
                     await progress_queue.put({"event": "complete", "data": {
                         "status": job.status.value if hasattr(job.status, 'value') else job.status,
                         "final_video_url": job.final_video_url,
@@ -562,7 +599,7 @@ async def create_ad_stream_with_upload(
             while True:
                 try:
                     # Wait for event with timeout for keepalive
-                    event = await asyncio.wait_for(progress_queue.get(), timeout=15.0)
+                    event = await asyncio.wait_for(progress_queue.get(), timeout=settings.SSE_KEEPALIVE_SECONDS)
 
                     if event is None:  # End signal
                         break
@@ -601,4 +638,4 @@ async def create_ad_stream_with_upload(
             "X-Accel-Buffering": "no",
         }
     )
- 
+

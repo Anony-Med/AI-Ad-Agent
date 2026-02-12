@@ -36,12 +36,10 @@ class Token(BaseModel):
 
 
 class UserInfo(BaseModel):
-    """User information from Unified API."""
-    id: str = Field(alias="user_id")  # Unified API returns "user_id"
+    """User information."""
+    id: str = Field(alias="user_id")
     email: str
     name: Optional[str] = None
-    credits: Optional[float] = 0.0
-    total_spent: Optional[float] = 0.0
     created_at: Optional[datetime] = None
 
     model_config = {"populate_by_name": True}  # Accept both "id" and "user_id"

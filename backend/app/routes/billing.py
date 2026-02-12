@@ -1,14 +1,9 @@
 """Billing and usage analytics endpoints."""
 import logging
-from typing import List, Optional
 from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException, status, Depends, Query
-from app.models.schemas import (
-    UsageStats,
-    BillingRecord,
-)
+from app.models.schemas import UsageStats
 from app.middleware.auth import get_current_user_id
-from app.services.unified_api_client import unified_api_client, UnifiedAPIError
 from app.database import get_db
 
 logger = logging.getLogger(__name__)
@@ -46,77 +41,4 @@ async def get_usage_statistics(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get usage statistics: {str(e)}",
-        )
-
-
-@router.get("/history", response_model=List[BillingRecord])
-async def get_billing_history(
-    limit: int = Query(50, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-):
-    """
-    Get billing history from Unified API.
-
-    Returns detailed billing records for all generations.
-    """
-    try:
-        records = await unified_api_client.get_billing_history(
-            limit=limit,
-            offset=offset,
-        )
-
-        # Convert to BillingRecord format
-        billing_records = []
-        for record in records:
-            billing_records.append(
-                BillingRecord(
-                    id=record.get("id", ""),
-                    user_id=record.get("user_id", ""),
-                    job_id=record.get("job_id", ""),
-                    amount=record.get("amount", 0),
-                    model=record.get("model", ""),
-                    ad_type=record.get("type", ""),
-                    description=record.get("description", ""),
-                    created_at=record.get("created_at") or datetime.utcnow(),
-                )
-            )
-
-        return billing_records
-
-    except UnifiedAPIError as e:
-        logger.error(f"Failed to get billing history: {e.message}")
-        raise HTTPException(
-            status_code=e.status_code or status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=e.message,
-        )
-    except Exception as e:
-        logger.error(f"Failed to get billing history: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get billing history: {str(e)}",
-        )
-
-
-@router.get("/models")
-async def get_available_models():
-    """
-    Get list of available AI models with pricing information.
-
-    Returns models from the Unified API with their capabilities and costs.
-    """
-    try:
-        models = await unified_api_client.get_models()
-        return {"models": models}
-
-    except UnifiedAPIError as e:
-        logger.error(f"Failed to get models: {e.message}")
-        raise HTTPException(
-            status_code=e.status_code or status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=e.message,
-        )
-    except Exception as e:
-        logger.error(f"Failed to get models: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get models: {str(e)}",
         )

@@ -3,6 +3,7 @@ from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field
 from datetime import datetime
 from enum import Enum
+from app.config import settings
 
 
 class AdJobStatus(str, Enum):
@@ -19,6 +20,7 @@ class AdJobStatus(str, Enum):
     APPLYING_ENHANCEMENTS = "applying_enhancements"  # NEW: Apply creative suggestions
     ENHANCING_VOICE = "enhancing_voice"
     ADDING_AUDIO = "adding_audio"
+    ORCHESTRATING = "orchestrating"  # Claude agent is deciding next step
     FINALIZING = "finalizing"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -69,15 +71,15 @@ class AdRequest(BaseModel):
     voice_id: Optional[str] = Field(default=None, description="ElevenLabs voice ID (e.g., Bella)")
     background_music_prompt: Optional[str] = Field(default=None, description="Prompt for background music")
     add_sound_effects: bool = Field(default=True, description="Whether to add sound effects")
-    aspect_ratio: str = Field(default="16:9", description="Aspect ratio for videos")
-    resolution: str = Field(default="1080p", description="Video resolution")
+    aspect_ratio: str = Field(default_factory=lambda: settings.VEO_DEFAULT_ASPECT_RATIO, description="Aspect ratio for videos")
+    resolution: str = Field(default_factory=lambda: settings.VEO_DEFAULT_RESOLUTION, description="Video resolution")
     # Verification settings
     enable_verification: bool = Field(
         default=True,
         description="Verify generated clips match script content using Gemini Vision"
     )
     verification_threshold: float = Field(
-        default=0.6,
+        default_factory=lambda: settings.VERIFICATION_THRESHOLD,
         ge=0.0,
         le=1.0,
         description="Minimum confidence score (0.0-1.0) for clip verification to pass"
@@ -92,13 +94,13 @@ class AdRequest(BaseModel):
         description="Logo position: top-left, top-right, bottom-left, bottom-right, center"
     )
     logo_size: int = Field(
-        default=150,
+        default_factory=lambda: settings.LOGO_DEFAULT_SIZE,
         ge=50,
         le=500,
         description="Logo width in pixels (height auto-scaled)"
     )
     logo_opacity: float = Field(
-        default=0.8,
+        default_factory=lambda: settings.LOGO_DEFAULT_OPACITY,
         ge=0.0,
         le=1.0,
         description="Logo opacity (0.0 = transparent, 1.0 = opaque)"
@@ -159,7 +161,7 @@ class VeoPromptRequest(BaseModel):
     """Request to generate Veo prompts from script."""
     script: str
     character_name: str = "character"
-    max_clip_duration: int = 7
+    max_clip_duration: int = Field(default_factory=lambda: settings.DEFAULT_CLIP_DURATION)
 
 
 class VeoPromptResponse(BaseModel):

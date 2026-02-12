@@ -5,6 +5,7 @@ import tempfile
 from typing import Optional, List, Dict
 from app.ad_agent.clients.elevenlabs_client import ElevenLabsClient
 from app.ad_agent.utils.audio_utils import AudioAnalyzer
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +21,7 @@ class AudioCompositorAgent:
         self,
         script: str,
         voice_id: Optional[str] = None,
-        voice_name: Optional[str] = "Bella",
+        voice_name: Optional[str] = None,
     ) -> str:
         """
         Generate voiceover for the script.
@@ -33,6 +34,8 @@ class AudioCompositorAgent:
         Returns:
             Path to generated audio file
         """
+        voice_name = voice_name or settings.DEFAULT_VOICE_NAME
+
         logger.info(f"Generating voiceover ({len(script)} characters)")
 
         # Find voice by name if ID not provided
@@ -41,15 +44,12 @@ class AudioCompositorAgent:
 
         if not voice_id:
             logger.warning(f"Voice '{voice_name}' not found, using default")
-            voice_id = "21m00Tcm4TlvDq8ikWAM"  # Default voice
+            voice_id = settings.DEFAULT_VOICE_ID
 
-        # Generate TTS
+        # Generate TTS (uses defaults from settings via ElevenLabsClient)
         audio_bytes = await self.elevenlabs.text_to_speech(
             text=script,
             voice_id=voice_id,
-            stability=0.5,
-            similarity_boost=0.75,
-            speed=1.0,
         )
 
         # Save to temp file
@@ -88,7 +88,7 @@ class AudioCompositorAgent:
     async def generate_sound_effects(
         self,
         prompts: list[str],
-        duration: float = 3.0,
+        duration: Optional[float] = None,
     ) -> list[str]:
         """
         Generate sound effects.
@@ -100,6 +100,8 @@ class AudioCompositorAgent:
         Returns:
             List of paths to generated SFX files
         """
+        duration = duration if duration is not None else settings.DEFAULT_SFX_DURATION
+
         logger.info(f"Generating {len(prompts)} sound effects")
 
         sfx_files = []
@@ -130,7 +132,7 @@ class AudioCompositorAgent:
         self,
         script_segments: List[str],
         voice_id: Optional[str] = None,
-        voice_name: Optional[str] = "Bella",
+        voice_name: Optional[str] = None,
     ) -> List[Dict]:
         """
         Generate voiceover and segment it based on script segments.
@@ -217,7 +219,7 @@ class AudioCompositorAgent:
                 "-i", video_path,  # FFmpeg streams from URLs automatically
                 "-vn",  # No video
                 "-acodec", "aac",  # Use AAC instead of libmp3lame
-                "-b:a", "192k",  # High quality bitrate
+                "-b:a", settings.AUDIO_BITRATE,
                 "-y",  # Overwrite
                 temp_audio.name,
             ]
@@ -227,7 +229,7 @@ class AudioCompositorAgent:
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=120,
+                timeout=settings.AUDIO_EXTRACTION_TIMEOUT,
             )
 
             if result.returncode != 0:
@@ -285,7 +287,7 @@ class AudioCompositorAgent:
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=300,
+                timeout=settings.AUDIO_REPLACEMENT_TIMEOUT,
             )
 
             if result.returncode != 0:

@@ -6,6 +6,7 @@ from typing import List, Dict, Any, Optional
 from app.services.veo_client import direct_veo_client, VeoAPIError
 from app.ad_agent.interfaces.ad_schemas import VideoClip
 from app.utils.image_utils import resize_image_for_veo, get_image_info
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +28,10 @@ class VideoGeneratorAgent:
         prompt: str,
         character_image: str,
         clip_number: int,
-        duration: int = 7,
-        aspect_ratio: str = "16:9",
-        resolution: str = "720p",
-        sample_count: int = 1,  # Number of videos to generate (1-4). Set to 1 for cost efficiency.
+        duration: Optional[int] = None,
+        aspect_ratio: Optional[str] = None,
+        resolution: Optional[str] = None,
+        sample_count: Optional[int] = None,
     ) -> VideoClip:
         """
         Generate a single video clip using Veo 3.1 image-to-video mode.
@@ -47,6 +48,12 @@ class VideoGeneratorAgent:
         Returns:
             VideoClip with job info
         """
+        # Resolve defaults from settings
+        duration = duration if duration is not None else settings.DEFAULT_CLIP_DURATION
+        aspect_ratio = aspect_ratio or settings.VEO_DEFAULT_ASPECT_RATIO
+        resolution = resolution or settings.VEO_DEFAULT_RESOLUTION
+        sample_count = sample_count if sample_count is not None else settings.VEO_SAMPLE_COUNT
+
         logger.info(f"Generating clip {clip_number} with Direct Veo API (sample_count={sample_count})")
         logger.info(f"DEBUG VIDEO_GEN: generate_video_clip called with clip_number={clip_number}")
 
@@ -67,8 +74,8 @@ class VideoGeneratorAgent:
 
             optimized_image = resize_image_for_veo(
                 character_image,
-                max_size=768,  # Good balance of quality and size
-                quality=85,
+                max_size=settings.IMAGE_MAX_SIZE,
+                quality=settings.IMAGE_QUALITY_JPEG,
             )
 
             # Create video job via Direct Veo API
@@ -123,9 +130,9 @@ class VideoGeneratorAgent:
         character_image: str,
         clip_number: int,
         script_segment: str,
-        duration: int = 7,
-        aspect_ratio: str = "16:9",
-        resolution: str = "720p",
+        duration: Optional[int] = None,
+        aspect_ratio: Optional[str] = None,
+        resolution: Optional[str] = None,
     ) -> VideoClip:
         """
         Alias for generate_video_clip with script_segment parameter.
@@ -222,9 +229,9 @@ class VideoGeneratorAgent:
         self,
         prompts: List[str],
         character_image: str,
-        duration: int = 7,
-        aspect_ratio: str = "16:9",
-        resolution: str = "720p",
+        duration: Optional[int] = None,
+        aspect_ratio: Optional[str] = None,
+        resolution: Optional[str] = None,
         max_concurrent: int = 3,
         clip_number_offset: int = 0,
     ) -> List[VideoClip]:
@@ -277,13 +284,13 @@ class VideoGeneratorAgent:
     async def wait_for_all_clips(
         self,
         clips: List[VideoClip],
-        timeout: int = 600,
-        max_retries: int = 3,
+        timeout: Optional[int] = None,
+        max_retries: Optional[int] = None,
         character_image: str = None,
         prompts: List[str] = None,
-        duration: int = 7,
-        aspect_ratio: str = "16:9",
-        resolution: str = "720p",
+        duration: Optional[int] = None,
+        aspect_ratio: Optional[str] = None,
+        resolution: Optional[str] = None,
     ) -> List[VideoClip]:
         """
         Wait for all video clips to complete with automatic retry on timeout.
@@ -301,6 +308,13 @@ class VideoGeneratorAgent:
         Returns:
             Updated list of VideoClip objects with video data
         """
+        # Resolve defaults from settings
+        timeout = timeout if timeout is not None else settings.VIDEO_GENERATION_TIMEOUT
+        max_retries = max_retries if max_retries is not None else settings.MAX_CLIP_RETRIES
+        duration = duration if duration is not None else settings.DEFAULT_CLIP_DURATION
+        aspect_ratio = aspect_ratio or settings.VEO_DEFAULT_ASPECT_RATIO
+        resolution = resolution or settings.VEO_DEFAULT_RESOLUTION
+
         logger.info(f"Waiting for {len(clips)} video clips to complete (max {max_retries} retries per clip)")
 
         async def wait_for_clip_with_retry(clip: VideoClip, clip_prompt: str = None) -> VideoClip:

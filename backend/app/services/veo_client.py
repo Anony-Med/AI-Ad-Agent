@@ -1,17 +1,19 @@
 """
-Direct Google Vertex AI Veo 3.1 API Client.
+Direct Google Vertex AI Veo 3.1 API Client using google-genai SDK.
 
-This client directly calls Google's Veo API without going through Unified API,
-using image-to-video mode to bypass celebrity likeness restrictions.
+Uses the google-genai SDK with Vertex AI backend for video generation.
+Supports image-to-video and video extension modes.
 """
 
 import asyncio
 import base64
 import logging
-from typing import Dict, Any, Optional, List
-from google.auth import default
-from google.auth.transport.requests import Request
-import httpx
+from typing import Any, Dict, List, Optional
+
+from google import genai
+from google.genai import types
+
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -27,78 +29,54 @@ class VeoAPIError(Exception):
 
 
 class DirectVeoClient:
-    """Direct Google Vertex AI Veo 3.1 API client."""
+    """Direct Google Vertex AI Veo 3.1 API client using google-genai SDK."""
 
     def __init__(
         self,
-        project_id: str = "sound-invention-432122-m5",
-        location: str = "us-central1",
+        project_id: Optional[str] = None,
+        location: Optional[str] = None,
     ):
         """
         Initialize the Direct Veo client.
 
         Args:
-            project_id: GCP project ID
-            location: GCP region for Veo API
+            project_id: GCP project ID (defaults to settings.GCP_PROJECT_ID)
+            location: GCP region for Veo API (defaults to settings.VEO_REGION)
         """
-        self.project_id = project_id
-        self.location = location
-        self.api_endpoint = f"{location}-aiplatform.googleapis.com"
-        self.model_id = "veo-3.1-generate-preview"
-        self._credentials = None
-        self._access_token = None
+        self.project_id = project_id or settings.GCP_PROJECT_ID
+        self.location = location or settings.VEO_REGION
+        self.model_id = settings.VEO_MODEL_ID
 
-        logger.info(f"Initialized DirectVeoClient for project {project_id} in {location}")
+        self.client = genai.Client(
+            vertexai=True,
+            project=self.project_id,
+            location=self.location,
+        )
 
-    def _get_credentials(self):
-        """
-        Get Google Cloud credentials using default credentials.
+        # Cache operations by name for polling
+        self._operations: Dict[str, Any] = {}
 
-        This works with:
-        - gcloud auth login (local development)
-        - Service account JSON key (GOOGLE_APPLICATION_CREDENTIALS)
-        - Workload Identity (Cloud Run)
-        """
-        if not self._credentials:
-            self._credentials, project = default()
-            logger.info(f"Loaded default credentials for project: {project}")
-        return self._credentials
-
-    def _get_access_token(self) -> str:
-        """
-        Get a fresh access token.
-
-        Returns:
-            Access token string
-        """
-        credentials = self._get_credentials()
-
-        # Refresh token if needed
-        if not credentials.valid:
-            credentials.refresh(Request())
-
-        self._access_token = credentials.token
-        return self._access_token
+        logger.info(
+            f"Initialized DirectVeoClient (google-genai SDK) "
+            f"for project {self.project_id} in {self.location}"
+        )
 
     async def create_video_job(
         self,
         prompt: str,
         character_image_b64: str,
-        duration_seconds: int = 8,
-        aspect_ratio: str = "16:9",
-        resolution: str = "720p",
-        sample_count: int = 1,
+        duration_seconds: Optional[int] = None,
+        aspect_ratio: Optional[str] = None,
+        resolution: Optional[str] = None,
+        sample_count: Optional[int] = None,
         generate_audio: bool = True,
     ) -> str:
         """
         Create a video generation job using Veo's image-to-video mode.
 
-        This uses the direct Veo API with image in the instances array,
-        which treats it as image-to-video and bypasses celebrity detection.
-
         Args:
             prompt: Video generation prompt describing the action/motion
-            character_image_b64: Base64 encoded character image (JPEG, 512-1024px recommended)
+            character_image_b64: Base64 encoded character image (JPEG)
             duration_seconds: Duration (4, 6, or 8 seconds)
             aspect_ratio: Aspect ratio (9:16, 16:9)
             resolution: Resolution (720p or 1080p)
@@ -106,97 +84,79 @@ class DirectVeoClient:
             generate_audio: Whether to generate audio
 
         Returns:
-            Operation ID for polling
+            Operation name (string) for polling
 
         Raises:
             VeoAPIError: If the API request fails
         """
-        url = (
-            f"https://{self.api_endpoint}/v1/"
-            f"projects/{self.project_id}/locations/{self.location}/"
-            f"publishers/google/models/{self.model_id}:predictLongRunning"
-        )
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self._get_access_token()}",
-        }
+        duration_seconds = duration_seconds if duration_seconds is not None else settings.MAX_CLIP_DURATION
+        aspect_ratio = aspect_ratio or settings.VEO_DEFAULT_ASPECT_RATIO
+        resolution = resolution or settings.VEO_DEFAULT_RESOLUTION
+        sample_count = sample_count if sample_count is not None else settings.VEO_SAMPLE_COUNT
 
         # Validate duration
         if duration_seconds not in [4, 6, 8]:
-            logger.warning(f"Invalid duration {duration_seconds}, using 8s")
-            duration_seconds = 8
+            logger.warning(f"Invalid duration {duration_seconds}, using {settings.MAX_CLIP_DURATION}s")
+            duration_seconds = settings.MAX_CLIP_DURATION
 
-        payload = {
-            "instances": [
-                {
-                    "prompt": prompt,
-                    "image": {
-                        "bytesBase64Encoded": character_image_b64,
-                        "mimeType": "image/jpeg",
-                    },
-                }
-            ],
-            "parameters": {
-                "aspectRatio": aspect_ratio,
-                "sampleCount": sample_count,
-                "durationSeconds": str(duration_seconds),
-                "personGeneration": "allow_all",
-                "addWatermark": True,
-                "includeRaiReason": True,
-                "generateAudio": generate_audio,
-                "resolution": resolution,
-            },
-        }
+        # Decode base64 image to raw bytes for the SDK
+        image_bytes = base64.b64decode(character_image_b64)
+
+        source = types.GenerateVideosSource(
+            prompt=prompt,
+            image=types.Image(image_bytes=image_bytes, mime_type="image/jpeg"),
+        )
+        config = types.GenerateVideosConfig(
+            aspect_ratio=aspect_ratio,
+            duration_seconds=duration_seconds,
+            resolution=resolution,
+            person_generation=settings.VEO_PERSON_GENERATION,
+            number_of_videos=sample_count,
+            generate_audio=generate_audio,
+        )
 
         logger.info(f"Creating Veo video job (prompt length: {len(prompt)} chars)")
         logger.info(f"  Prompt preview: {prompt[:120]}...")
         logger.info(f"  Full prompt: {prompt}")
         logger.debug(f"  Duration: {duration_seconds}s | Resolution: {resolution} | Aspect: {aspect_ratio}")
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            try:
-                response = await client.post(url, headers=headers, json=payload)
+        try:
+            operation = await self.client.aio.models.generate_videos(
+                model=self.model_id,
+                source=source,
+                config=config,
+            )
 
-                if response.status_code != 200:
-                    error_detail = response.text
-                    logger.error(f"Veo API error {response.status_code}: {error_detail}")
-                    raise VeoAPIError(
-                        f"Failed to create video job: {response.status_code}",
-                        status_code=response.status_code,
-                        detail=error_detail,
-                    )
+            operation_name = operation.name
+            if not operation_name:
+                raise VeoAPIError("No operation name returned from Veo API")
 
-                result = response.json()
-                operation_id = result.get("name", "")
+            # Cache for later polling
+            self._operations[operation_name] = operation
 
-                if not operation_id:
-                    raise VeoAPIError(f"No operation ID in response: {result}")
+            logger.info(f"Veo job created: {operation_name}")
+            return operation_name
 
-                logger.info(f"✅ Veo job created: {operation_id}")
-                return operation_id
-
-            except httpx.HTTPError as e:
-                logger.error(f"HTTP error creating Veo job: {e}")
-                raise VeoAPIError(f"Network error: {str(e)}")
+        except VeoAPIError:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to create Veo video job: {e}")
+            raise VeoAPIError(f"Failed to create video job: {str(e)}", detail=str(e))
 
     async def extend_video_job(
         self,
         prompt: str,
         source_video_gcs_uri: str,
-        duration_seconds: int = 8,
-        aspect_ratio: str = "16:9",
-        resolution: str = "720p",
-        sample_count: int = 1,
+        duration_seconds: Optional[int] = None,
+        aspect_ratio: Optional[str] = None,
+        resolution: Optional[str] = None,
+        sample_count: Optional[int] = None,
         generate_audio: bool = True,
     ) -> str:
         """
         Create a video extension job using Veo's video-to-video mode.
 
-        This extends an existing video by continuing the motion/action.
-        Can be used up to 20 times to create videos up to 148 seconds long.
-
-        IMPORTANT: Video extension requires the source video to be in GCS, not base64.
+        Extends an existing video by continuing the motion/action.
 
         Args:
             prompt: Video generation prompt describing the continuation
@@ -208,218 +168,168 @@ class DirectVeoClient:
             generate_audio: Whether to generate audio
 
         Returns:
-            Operation ID for polling
+            Operation name (string) for polling
 
         Raises:
             VeoAPIError: If the API request fails
         """
-        url = (
-            f"https://{self.api_endpoint}/v1/"
-            f"projects/{self.project_id}/locations/{self.location}/"
-            f"publishers/google/models/{self.model_id}:predictLongRunning"
-        )
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self._get_access_token()}",
-        }
+        duration_seconds = duration_seconds if duration_seconds is not None else settings.MAX_CLIP_DURATION
+        aspect_ratio = aspect_ratio or settings.VEO_DEFAULT_ASPECT_RATIO
+        resolution = resolution or settings.VEO_DEFAULT_RESOLUTION
+        sample_count = sample_count if sample_count is not None else settings.VEO_SAMPLE_COUNT
 
         # Validate duration
         if duration_seconds not in [4, 6, 8]:
-            logger.warning(f"Invalid duration {duration_seconds}, using 8s")
-            duration_seconds = 8
+            logger.warning(f"Invalid duration {duration_seconds}, using {settings.MAX_CLIP_DURATION}s")
+            duration_seconds = settings.MAX_CLIP_DURATION
 
-        # For video extension, use "video" with GCS URI (not base64!)
-        payload = {
-            "instances": [
-                {
-                    "prompt": prompt,
-                    "video": {
-                        "gcsUri": source_video_gcs_uri,
-                        "mimeType": "video/mp4",
-                    },
-                }
-            ],
-            "parameters": {
-                "aspectRatio": aspect_ratio,
-                "sampleCount": sample_count,
-                "durationSeconds": str(duration_seconds),
-                "personGeneration": "allow_all",
-                "addWatermark": True,
-                "includeRaiReason": True,
-                "generateAudio": generate_audio,
-                "resolution": resolution,
-            },
-        }
+        source = types.GenerateVideosSource(
+            prompt=prompt,
+            video=types.Video(uri=source_video_gcs_uri),
+        )
+        config = types.GenerateVideosConfig(
+            aspect_ratio=aspect_ratio,
+            duration_seconds=duration_seconds,
+            resolution=resolution,
+            person_generation=settings.VEO_PERSON_GENERATION,
+            number_of_videos=sample_count,
+            generate_audio=generate_audio,
+        )
 
         logger.info(f"Extending video with prompt: {prompt[:100]}...")
         logger.debug(f"  Duration: {duration_seconds}s | Resolution: {resolution} | Aspect: {aspect_ratio}")
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            try:
-                response = await client.post(url, headers=headers, json=payload)
+        try:
+            operation = await self.client.aio.models.generate_videos(
+                model=self.model_id,
+                source=source,
+                config=config,
+            )
 
-                if response.status_code != 200:
-                    error_detail = response.text
-                    logger.error(f"Veo API error {response.status_code}: {error_detail}")
-                    raise VeoAPIError(
-                        f"Failed to extend video: {response.status_code}",
-                        status_code=response.status_code,
-                        detail=error_detail,
-                    )
+            operation_name = operation.name
+            if not operation_name:
+                raise VeoAPIError("No operation name returned from Veo API")
 
-                result = response.json()
-                operation_id = result.get("name", "")
+            # Cache for later polling
+            self._operations[operation_name] = operation
 
-                if not operation_id:
-                    raise VeoAPIError(f"No operation ID in response: {result}")
+            logger.info(f"Video extension job created: {operation_name}")
+            return operation_name
 
-                logger.info(f"✅ Video extension job created: {operation_id}")
-                return operation_id
-
-            except httpx.HTTPError as e:
-                logger.error(f"HTTP error extending video: {e}")
-                raise VeoAPIError(f"Network error: {str(e)}")
-
-    async def get_operation_status(self, operation_id: str) -> Dict[str, Any]:
-        """
-        Fetch the status/result of a video generation operation.
-
-        Args:
-            operation_id: The operation ID returned from create_video_job
-
-        Returns:
-            Operation result dictionary
-
-        Raises:
-            VeoAPIError: If the API request fails
-        """
-        url = (
-            f"https://{self.api_endpoint}/v1/"
-            f"projects/{self.project_id}/locations/{self.location}/"
-            f"publishers/google/models/{self.model_id}:fetchPredictOperation"
-        )
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self._get_access_token()}",
-        }
-
-        payload = {
-            "operationName": operation_id,
-        }
-
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            try:
-                response = await client.post(url, headers=headers, json=payload)
-
-                if response.status_code != 200:
-                    raise VeoAPIError(
-                        f"Failed to fetch operation status: {response.status_code}",
-                        status_code=response.status_code,
-                        detail=response.text,
-                    )
-
-                return response.json()
-
-            except httpx.HTTPError as e:
-                logger.error(f"HTTP error fetching operation status: {e}")
-                raise VeoAPIError(f"Network error: {str(e)}")
+        except VeoAPIError:
+            raise
+        except Exception as e:
+            logger.error(f"Failed to create video extension job: {e}")
+            raise VeoAPIError(f"Failed to extend video: {str(e)}", detail=str(e))
 
     async def wait_for_completion(
         self,
         operation_id: str,
-        timeout: int = 600,
-        poll_interval: int = 10,
-    ) -> Dict[str, Any]:
+        timeout: Optional[int] = None,
+        poll_interval: Optional[int] = None,
+    ) -> Any:
         """
         Poll the operation until completion.
 
         Args:
-            operation_id: Operation ID to poll
+            operation_id: Operation name from create_video_job
             timeout: Maximum wait time in seconds
             poll_interval: Seconds between polls
 
         Returns:
-            Final operation result with videos
+            Completed Operation object (use extract_video_urls to get videos)
 
         Raises:
             TimeoutError: If operation doesn't complete in time
             VeoAPIError: If operation fails
         """
+        timeout = timeout if timeout is not None else settings.VIDEO_GENERATION_TIMEOUT
+        poll_interval = poll_interval if poll_interval is not None else settings.VEO_POLL_INTERVAL
+
         logger.info(f"Waiting for Veo job completion: {operation_id}")
+
+        operation = self._operations.get(operation_id)
+        if not operation:
+            raise VeoAPIError(
+                f"Unknown operation: {operation_id}. "
+                f"Operation must be created via create_video_job first."
+            )
 
         elapsed = 0
         while elapsed < timeout:
-            result = await self.get_operation_status(operation_id)
-
-            done = result.get("done", False)
-            metadata = result.get("metadata", {})
-            generic_metadata = metadata.get("genericMetadata", {})
-            state = generic_metadata.get("state", "UNKNOWN")
-
-            logger.debug(f"[{elapsed}s] Operation state: {state} | Done: {done}")
-
-            if done:
+            if operation.done:
                 # Check for errors
-                if "error" in result:
-                    error_info = result["error"]
-                    error_msg = error_info.get("message", str(error_info))
+                if hasattr(operation, "error") and operation.error:
+                    error_msg = str(operation.error)
                     logger.error(f"Veo job failed: {error_msg}")
-                    raise VeoAPIError(f"Video generation failed: {error_msg}", detail=error_info)
+                    raise VeoAPIError(
+                        f"Video generation failed: {error_msg}",
+                        detail=operation.error,
+                    )
 
-                # Check for successful completion
-                if "response" in result:
-                    videos = result.get("response", {}).get("videos", [])
-                    if videos:
-                        logger.info(f"✅ Veo job completed with {len(videos)} video(s)")
-                        return result
-                    else:
-                        logger.warning("Job completed but no videos in response")
-                        return result
+                # Check for successful result
+                if operation.result:
+                    generated = getattr(operation.result, "generated_videos", None) or []
+                    logger.info(f"Veo job completed with {len(generated)} video(s)")
+                    return operation
 
-                # Done but no response or error
-                logger.warning(f"Operation marked done but no clear result: {result}")
-                return result
+                logger.warning(f"Operation done but no result")
+                return operation
 
-            # Still processing
+            logger.debug(f"[{elapsed}s] Polling Veo operation... (not done yet)")
             await asyncio.sleep(poll_interval)
+
+            try:
+                operation = await self.client.aio.operations.get(operation=operation)
+                self._operations[operation_id] = operation
+            except Exception as e:
+                logger.error(f"Error polling Veo operation: {e}")
+                raise VeoAPIError(f"Failed to poll operation: {str(e)}")
+
             elapsed += poll_interval
 
         raise TimeoutError(f"Veo job {operation_id} timed out after {timeout}s")
 
-    def extract_video_urls(self, operation_result: Dict[str, Any]) -> List[str]:
+    def extract_video_urls(self, operation_result: Any) -> List[str]:
         """
-        Extract video data from operation result.
-
-        The videos are returned as base64 encoded strings in the response.
+        Extract base64-encoded video data from a completed operation.
 
         Args:
-            operation_result: Result from wait_for_completion
+            operation_result: Operation object from wait_for_completion
 
         Returns:
             List of base64 encoded video strings
         """
-        response = operation_result.get("response", {})
-        videos = response.get("videos", [])
+        try:
+            response = operation_result.result
+            if not response:
+                logger.warning("No result in operation")
+                return []
 
-        video_b64_list = []
-        for video in videos:
-            video_b64 = video.get("bytesBase64Encoded", "")
-            if video_b64:
-                video_b64_list.append(video_b64)
+            generated_videos = getattr(response, "generated_videos", None) or []
 
-        logger.info(f"Extracted {len(video_b64_list)} video(s) from result")
-        return video_b64_list
+            video_b64_list = []
+            for gv in generated_videos:
+                video = gv.video
+                if video and hasattr(video, "video_bytes") and video.video_bytes:
+                    video_b64 = base64.b64encode(video.video_bytes).decode("utf-8")
+                    video_b64_list.append(video_b64)
+
+            logger.info(f"Extracted {len(video_b64_list)} video(s) from result")
+            return video_b64_list
+
+        except Exception as e:
+            logger.error(f"Error extracting videos from result: {e}")
+            return []
 
     async def generate_video_complete(
         self,
         prompt: str,
         character_image_b64: str,
-        duration_seconds: int = 8,
-        aspect_ratio: str = "16:9",
-        resolution: str = "720p",
-        timeout: int = 600,
+        duration_seconds: Optional[int] = None,
+        aspect_ratio: Optional[str] = None,
+        resolution: Optional[str] = None,
+        timeout: Optional[int] = None,
     ) -> str:
         """
         Convenience method: Create job, wait for completion, return first video.

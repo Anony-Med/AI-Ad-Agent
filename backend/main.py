@@ -9,7 +9,6 @@ from app.config import settings
 from app.routes import (
     auth_router,
     campaigns_router,
-    generate_router,
     assets_router,
     billing_router,
 )
@@ -59,14 +58,13 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}")
     logger.info(f"Environment: {settings.ENVIRONMENT}")
-    logger.info(f"Unified API: {settings.UNIFIED_API_BASE_URL}")
     logger.info(f"GCP Project: {settings.GCP_PROJECT_ID}")
 
-    # Load secrets from Secret Manager (Unified API pattern)
+    # Load secrets from Secret Manager
     try:
         from app.secrets import ensure_secrets_loaded
         ensure_secrets_loaded()
-        logger.info("✅ Secrets loaded from Secret Manager")
+        logger.info("Secrets loaded from Secret Manager")
     except Exception as e:
         logger.warning(f"Failed to load secrets from Secret Manager: {e}")
         logger.warning("Continuing with environment variables...")
@@ -77,34 +75,33 @@ async def lifespan(app: FastAPI):
 
         try:
             db = get_db()
-            logger.info("✅ Firestore initialized")
+            logger.info("Firestore initialized")
         except Exception as e:
-            logger.warning(f"⚠️ Firestore not initialized: {e}")
-            logger.warning("Continuing without Firestore (using Unified API for auth)")
+            logger.warning(f"Firestore not initialized: {e}")
 
         try:
             storage = get_storage()
-            logger.info("✅ GCS Storage initialized")
+            logger.info("GCS Storage initialized")
         except Exception as e:
-            logger.warning(f"⚠️ GCS Storage not initialized: {e}")
+            logger.warning(f"GCS Storage not initialized: {e}")
 
     except Exception as e:
-        logger.error(f"❌ Failed to load database module: {e}")
+        logger.error(f"Failed to load database module: {e}")
         logger.warning("Continuing with limited functionality...")
 
     # Verify ffmpeg is available (required for video processing)
     try:
         from app.ad_agent.utils.video_utils import VideoProcessor
         if VideoProcessor.check_ffmpeg():
-            logger.info("✅ FFmpeg available for video processing")
+            logger.info("FFmpeg available for video processing")
         else:
-            logger.error("❌ FFmpeg not found - video processing will fail!")
+            logger.error("FFmpeg not found - video processing will fail!")
             raise RuntimeError("FFmpeg is required but not installed")
     except Exception as e:
-        logger.error(f"❌ FFmpeg check failed: {e}")
+        logger.error(f"FFmpeg check failed: {e}")
         raise
 
-    logger.info("🚀 Application startup complete!")
+    logger.info("Application startup complete!")
 
     yield
 
@@ -116,7 +113,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    description="AI-powered ad creative generation agent using Unified API",
+    description="AI-powered ad creative generation agent",
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
@@ -162,7 +159,6 @@ async def general_exception_handler(request: Request, exc: Exception):
 # Include routers
 app.include_router(auth_router, prefix="/api")
 app.include_router(campaigns_router, prefix="/api")
-app.include_router(generate_router, prefix="/api")
 app.include_router(assets_router, prefix="/api")
 app.include_router(billing_router, prefix="/api")
 app.include_router(ad_agent_router, prefix="/api")  # AI Ad Agent

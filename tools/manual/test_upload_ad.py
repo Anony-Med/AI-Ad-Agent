@@ -8,7 +8,7 @@ async def test_upload_ad():
     """Test the /create-stream-upload endpoint with file upload."""
 
     # Configuration
-    BASE_URL = "http://localhost:8000"
+    BASE_URL = "http://localhost:8001"
     AVATAR_PATH = r"/Users/ar2427/Downloads/WhatsApp Image 2026-01-13 at 12.56.03.jpeg"
 
     # Script for the ad

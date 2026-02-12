@@ -1,4 +1,4 @@
-"""Unified API Gemini client for text/chat generation."""
+"""Google Gemini client using the google-genai SDK with Vertex AI."""
 import os
 import logging
 import json
@@ -7,35 +7,42 @@ from datetime import datetime
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from google import genai
+from google.genai import types
+
+from app.config import settings
+
 logger = logging.getLogger(__name__)
 
 
 class GeminiClient:
-    """Client for Google Gemini AI text generation via Unified API."""
+    """Client for Google Gemini AI via the google-genai SDK (Vertex AI)."""
 
     def __init__(self, api_key: Optional[str] = None, storage_client=None, job_id: Optional[str] = None, user_id: Optional[str] = None):
         """
-        Initialize Gemini client.
+        Initialize Gemini client using google-genai SDK with Vertex AI.
 
         Args:
-            api_key: Deprecated - now uses Unified API with JWT auth
+            api_key: Not used — Vertex AI uses ADC
             storage_client: Optional GCS storage client for saving prompts/responses
             job_id: Optional job ID for GCS logging
             user_id: Optional user ID for GCS logging
         """
-        # Get Unified API configuration
-        from app.config import settings
-        self.unified_api_url = settings.UNIFIED_API_BASE_URL
-        self.model = "gemini-3-flash-preview"  # Latest Gemini 3
-        self.timeout = 120
+        self.model = settings.GEMINI_MODEL
+        self.timeout = settings.GEMINI_TIMEOUT
         self.storage = storage_client
         self.job_id = job_id
         self.user_id = user_id
 
-        # Use the singleton Unified API client (already authenticated via middleware)
-        from app.services.unified_api_client import unified_api_client
-        self.unified_client = unified_api_client
-        self.jwt_token = None
+        # Initialize google-genai client with Vertex AI
+        self.client = genai.Client(
+            vertexai=True,
+            project=settings.GCP_PROJECT_ID,
+            location=settings.GEMINI_REGION,
+        )
+
+        logger.info(f"GeminiClient initialized with google-genai SDK (Vertex AI) "
+                     f"project={settings.GCP_PROJECT_ID}, location={settings.GEMINI_REGION}, model={self.model}")
 
     async def _save_to_gcs(self, filename: str, data: dict):
         """Save data to GCS for debugging and analysis."""
@@ -44,31 +51,13 @@ class GeminiClient:
             return
 
         try:
-            from app.config import settings
             blob_path = f"{self.user_id}/{self.job_id}/{filename}"
-
-            # Convert data to JSON string
             json_data = json.dumps(data, indent=2, ensure_ascii=False)
-
-            # Upload to GCS
             blob = self.storage.bucket.blob(blob_path)
             blob.upload_from_string(json_data, content_type="application/json")
-
             logger.info(f"Saved Gemini log to GCS: {blob_path}")
         except Exception as e:
             logger.warning(f"Failed to save to GCS: {e}")
-
-    async def _get_jwt_token(self) -> str:
-        """Get JWT token from Unified API (uses token set by auth middleware)."""
-        if self.jwt_token:
-            return self.jwt_token
-
-        # Use the token already set on the singleton client by the auth middleware
-        if self.unified_client._token:
-            self.jwt_token = self.unified_client._token
-            return self.jwt_token
-
-        raise AttributeError("No JWT token available. User must be authenticated first.")
 
     @retry(
         stop=stop_after_attempt(3),
@@ -78,11 +67,11 @@ class GeminiClient:
         self,
         prompt: str,
         system_instruction: Optional[str] = None,
-        temperature: float = 0.7,
-        max_tokens: int = 2048,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
     ) -> str:
         """
-        Generate text using Gemini via Unified API.
+        Generate text using Gemini via the google-genai SDK.
 
         Args:
             prompt: The user prompt
@@ -93,44 +82,33 @@ class GeminiClient:
         Returns:
             Generated text response
         """
-        url = f"{self.unified_api_url}/v1/text"
+        if temperature is None:
+            temperature = settings.GEMINI_TEMPERATURE
+        if max_tokens is None:
+            max_tokens = settings.GEMINI_MAX_TOKENS
 
-        # Build request payload for Unified API
-        payload: Dict[str, Any] = {
-            "model": self.model,
-            "prompt": prompt,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "response_format": "text",
-        }
+        config = types.GenerateContentConfig(
+            temperature=temperature,
+            max_output_tokens=max_tokens,
+        )
 
         if system_instruction:
-            payload["system_instruction"] = system_instruction
+            config.system_instruction = system_instruction
 
-        # Get JWT token for authentication
-        jwt_token = await self._get_jwt_token()
+        try:
+            response = await self.client.aio.models.generate_content(
+                model=self.model,
+                contents=prompt,
+                config=config,
+            )
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            try:
-                response = await client.post(
-                    url,
-                    json=payload,
-                    headers={"Authorization": f"Bearer {jwt_token}"}
-                )
-                response.raise_for_status()
+            text = response.text
+            logger.info(f"Gemini generated {len(text)} characters using model {self.model}")
+            return text
 
-                result = response.json()
-                text = result["text"]
-
-                logger.info(f"Gemini (via Unified API) generated {len(text)} characters using model {result.get('model', self.model)}")
-                return text
-
-            except httpx.HTTPStatusError as e:
-                logger.error(f"Unified API Gemini error: {e.response.status_code} - {e.response.text}")
-                raise
-            except Exception as e:
-                logger.error(f"Gemini request failed: {e}")
-                raise
+        except Exception as e:
+            logger.error(f"Gemini generate_text failed: {e}")
+            raise
 
     async def generate_veo_prompts(self, script: str, character_name: str = "character") -> List[str]:
         """
@@ -181,15 +159,11 @@ Generate DYNAMIC prompts with movement and actions now:"""
         response = await self.generate_text(
             prompt=prompt,
             system_instruction=system_instruction,
-            temperature=0.7,
-            max_tokens=2048,
         )
 
         # Parse JSON from response
-        import json
         import re
 
-        # Try to extract JSON array from response
         json_match = re.search(r'\[.*\]', response, re.DOTALL)
         if json_match:
             prompts = json.loads(json_match.group())
@@ -276,7 +250,7 @@ SEGMENT LENGTH REQUIREMENTS:
 ● Distribute the script text EVENLY across all clips
 ● If a natural break creates a short segment, combine it with the previous or next segment to reach 6-7 seconds
 
-🚨 CRITICAL RULES - THE AVATAR WILL SPEAK ONLY THESE EXACT WORDS:
+CRITICAL RULES - THE AVATAR WILL SPEAK ONLY THESE EXACT WORDS:
 1. Copy the EXACT WORDS from the script into script_segments - character by character, no modifications
 2. The avatar's lip-sync depends on these EXACT words - any change will break synchronization
 3. Put each script segment in "quotes" to ensure exact text is preserved
@@ -288,7 +262,7 @@ SEGMENT LENGTH REQUIREMENTS:
 9. If a segment is short, allow SILENCE with visual action only
 10. Better to have silence than add words not in the script
 11. NEVER paraphrase, summarize, or reword the script - use it VERBATIM
-12. 🚨 AFTER SCRIPT ENDS: Avatar should STOP SPEAKING completely - just smile, walk, gesture, or do visual actions ONLY. NO gibberish, NO additional words, NO mouth movements that look like speaking
+12. AFTER SCRIPT ENDS: Avatar should STOP SPEAKING completely - just smile, walk, gesture, or do visual actions ONLY. NO gibberish, NO additional words, NO mouth movements that look like speaking
 
 Return in this JSON format with DYNAMIC prompts:
 {{
@@ -305,8 +279,6 @@ Generate DYNAMIC prompts NOW (remember: scenery descriptions YES, text overlays 
         response = await self.generate_text(
             prompt=prompt,
             system_instruction=system_instruction,
-            temperature=0.7,
-            max_tokens=2048,
         )
 
         # Save prompt and response to GCS for debugging
@@ -323,7 +295,6 @@ Generate DYNAMIC prompts NOW (remember: scenery descriptions YES, text overlays 
         # Parse JSON from response
         import re
 
-        # Try to extract JSON object from response
         json_match = re.search(r'\{.*\}', response, re.DOTALL)
         if json_match:
             data = json.loads(json_match.group())
@@ -400,12 +371,11 @@ Provide suggestions in JSON format:"""
         response = await self.generate_text(
             prompt=prompt,
             system_instruction=system_instruction,
-            temperature=0.8,
-            max_tokens=1024,
+            temperature=settings.GEMINI_TEMPERATURE_CREATIVE,
+            max_tokens=settings.GEMINI_MAX_TOKENS_COMPACT,
         )
 
         # Parse JSON
-        import json
         import re
 
         json_match = re.search(r'\{.*\}', response, re.DOTALL)
@@ -430,7 +400,7 @@ Provide suggestions in JSON format:"""
         prompt: str,
     ) -> Dict[str, Any]:
         """
-        Analyze video content using Gemini Vision and verify it matches the script.
+        Analyze video content using Gemini Vision via google-genai SDK.
 
         Args:
             video_url: URL of the video to analyze
@@ -438,23 +408,16 @@ Provide suggestions in JSON format:"""
             prompt: The Veo prompt used to generate this clip
 
         Returns:
-            Dict with verification results:
-            {
-                "visual_description": str,  # What's in the video
-                "matches_script": bool,     # Does it match the script?
-                "confidence_score": float,  # 0.0 to 1.0
-                "alignment_feedback": str   # Detailed explanation
-            }
+            Dict with verification results
         """
-        # Download video to analyze
         import tempfile
-        import base64
 
+        # Download the video
         video_path = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
+        async with httpx.AsyncClient(timeout=self.timeout) as http_client:
             try:
-                response = await client.get(video_url)
+                response = await http_client.get(video_url)
                 response.raise_for_status()
                 with open(video_path, 'wb') as f:
                     f.write(response.content)
@@ -462,18 +425,12 @@ Provide suggestions in JSON format:"""
                 logger.error(f"Failed to download video for analysis: {e}")
                 raise
 
-        # Read and encode video
         try:
             with open(video_path, 'rb') as f:
-                video_data = base64.b64encode(f.read()).decode('utf-8')
+                video_bytes = f.read()
         finally:
-            # Cleanup
-            import os
             if os.path.exists(video_path):
                 os.remove(video_path)
-
-        # Use Gemini Vision to analyze the video
-        url = f"{self.base_url}/models/gemini-2.0-flash-exp:generateContent?key={self.api_key}"
 
         system_instruction = """You are a video content analyzer. Analyze the provided video and verify if it matches the intended script and prompt.
 
@@ -507,59 +464,44 @@ Return your analysis in this JSON format:
   "alignment_feedback": "detailed explanation"
 }}"""
 
-        payload = {
-            "contents": [{
-                "role": "user",
-                "parts": [
-                    {
-                        "inline_data": {
-                            "mime_type": "video/mp4",
-                            "data": video_data
-                        }
-                    },
-                    {
-                        "text": analysis_prompt
-                    }
-                ]
-            }],
-            "generationConfig": {
-                "temperature": 0.3,  # Lower temperature for objective analysis
-                "maxOutputTokens": 1024,
-            },
-        }
+        try:
+            config = types.GenerateContentConfig(
+                temperature=settings.GEMINI_VISION_TEMPERATURE,
+                max_output_tokens=settings.GEMINI_VISION_MAX_TOKENS,
+                system_instruction=system_instruction,
+            )
 
-        if system_instruction:
-            payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
+            response = await self.client.aio.models.generate_content(
+                model=self.model,
+                contents=types.Content(
+                    role="user",
+                    parts=[
+                        types.Part.from_bytes(data=video_bytes, mime_type="video/mp4"),
+                        types.Part.from_text(text=analysis_prompt),
+                    ],
+                ),
+                config=config,
+            )
 
-        async with httpx.AsyncClient(timeout=300) as client:  # Longer timeout for video analysis
-            try:
-                response = await client.post(url, json=payload)
-                response.raise_for_status()
+            text = response.text
 
-                result = response.json()
-                text = result["candidates"][0]["content"]["parts"][0]["text"]
+            # Parse JSON from response
+            import re
 
-                # Parse JSON from response
-                import json
-                import re
+            json_match = re.search(r'\{.*\}', text, re.DOTALL)
+            if json_match:
+                analysis = json.loads(json_match.group())
+                logger.info(f"Video analysis complete: confidence={analysis.get('confidence_score', 0)}")
+                return analysis
+            else:
+                logger.warning("Could not parse video analysis JSON")
+                return {
+                    "visual_description": text,
+                    "matches_script": False,
+                    "confidence_score": 0.0,
+                    "alignment_feedback": "Failed to parse analysis response"
+                }
 
-                json_match = re.search(r'\{.*\}', text, re.DOTALL)
-                if json_match:
-                    analysis = json.loads(json_match.group())
-                    logger.info(f"Video analysis complete: confidence={analysis.get('confidence_score', 0)}")
-                    return analysis
-                else:
-                    logger.warning("Could not parse video analysis JSON")
-                    return {
-                        "visual_description": text,
-                        "matches_script": False,
-                        "confidence_score": 0.0,
-                        "alignment_feedback": "Failed to parse analysis response"
-                    }
-
-            except httpx.HTTPStatusError as e:
-                logger.error(f"Gemini Vision API error: {e.response.status_code} - {e.response.text}")
-                raise
-            except Exception as e:
-                logger.error(f"Video analysis failed: {e}")
-                raise
+        except Exception as e:
+            logger.error(f"Video analysis failed: {e}")
+            raise

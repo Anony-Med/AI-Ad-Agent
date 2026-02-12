@@ -210,14 +210,14 @@ def load_secrets_to_config():
 
     secrets_mgr = get_secrets_manager()
 
-    # Load SECRET_KEY if not set
-    if not settings.SECRET_KEY:
+    # Load JWT_SECRET_KEY if using default
+    if settings.JWT_SECRET_KEY == "change-me-in-production":
         secret_key = secrets_mgr.get_secret(settings.SECRET_MANAGER_SECRET_KEY_NAME)
         if secret_key:
-            settings.SECRET_KEY = secret_key
-            logger.info("Loaded SECRET_KEY from Secret Manager")
+            settings.JWT_SECRET_KEY = secret_key
+            logger.info("Loaded JWT_SECRET_KEY from Secret Manager")
         else:
-            logger.warning("SECRET_KEY not found in Secret Manager")
+            logger.warning("JWT_SECRET_KEY not found in Secret Manager, using default")
 
     # Load other secrets as needed
     # You can add more secrets here

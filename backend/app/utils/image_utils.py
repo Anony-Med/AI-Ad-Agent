@@ -15,8 +15,8 @@ logger = logging.getLogger(__name__)
 
 def resize_image_for_veo(
     image_b64: str,
-    max_size: int = 768,
-    quality: int = 85,
+    max_size: Optional[int] = None,
+    quality: Optional[int] = None,
 ) -> str:
     """
     Resize and optimize an image for Veo API.
@@ -38,6 +38,10 @@ def resize_image_for_veo(
     Raises:
         ValueError: If image cannot be decoded or processed
     """
+    from app.config import settings
+    max_size = max_size if max_size is not None else settings.IMAGE_MAX_SIZE
+    quality = quality if quality is not None else settings.IMAGE_QUALITY_JPEG
+
     try:
         # Strip data URI prefix if present (e.g., "data:image/jpeg;base64,")
         if ',' in image_b64 and image_b64.startswith('data:'):

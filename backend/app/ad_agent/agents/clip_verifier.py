@@ -3,6 +3,7 @@ import logging
 from typing import List, Optional
 from app.ad_agent.clients.gemini_client import GeminiClient
 from app.ad_agent.interfaces.ad_schemas import VideoClip, ClipVerification
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -15,7 +16,7 @@ class ClipVerifierAgent:
     Ensures visual content aligns with script (e.g., "leaky roofs" in script → roofs shown in video).
     """
 
-    def __init__(self, api_key: Optional[str] = None, confidence_threshold: float = 0.6):
+    def __init__(self, api_key: Optional[str] = None, confidence_threshold: Optional[float] = None):
         """
         Initialize the clip verifier.
 
@@ -24,7 +25,7 @@ class ClipVerifierAgent:
             confidence_threshold: Minimum confidence score to pass verification (0.0-1.0)
         """
         self.gemini = GeminiClient(api_key=api_key)
-        self.confidence_threshold = confidence_threshold
+        self.confidence_threshold = confidence_threshold if confidence_threshold is not None else settings.VERIFICATION_THRESHOLD
 
     async def verify_clip(
         self,
@@ -85,6 +86,75 @@ class ClipVerifierAgent:
 
         except Exception as e:
             logger.error(f"Failed to verify clip {clip.clip_number}: {e}", exc_info=True)
+            return ClipVerification(
+                verified=False,
+                confidence_score=0.0,
+                script_segment=script_segment,
+                alignment_feedback=f"Verification failed: {str(e)}",
+            )
+
+    async def verify_clip_from_url(
+        self,
+        clip_gcs_url: str,
+        script_segment: str,
+        veo_prompt: str,
+        clip_number: int = 0,
+    ) -> ClipVerification:
+        """
+        Verify a video clip from its GCS URL against script content.
+
+        This is used by the agentic orchestrator which passes GCS URLs
+        directly instead of VideoClip objects.
+
+        Args:
+            clip_gcs_url: Signed GCS URL of the video clip
+            script_segment: The script text this clip should represent
+            veo_prompt: The Veo prompt used to generate this clip
+            clip_number: Clip index (for logging)
+
+        Returns:
+            ClipVerification with analysis results
+        """
+        logger.info(f"Verifying clip {clip_number} from URL: {clip_gcs_url[:80]}...")
+
+        if not clip_gcs_url:
+            return ClipVerification(
+                verified=False,
+                confidence_score=0.0,
+                script_segment=script_segment,
+                alignment_feedback="No video URL provided for verification",
+            )
+
+        try:
+            analysis = await self.gemini.analyze_video_content(
+                video_url=clip_gcs_url,
+                script_segment=script_segment,
+                prompt=veo_prompt,
+            )
+
+            visual_description = analysis.get("visual_description", "")
+            matches_script = analysis.get("matches_script", False)
+            confidence_score = analysis.get("confidence_score", 0.0)
+            alignment_feedback = analysis.get("alignment_feedback", "")
+
+            verified = confidence_score >= self.confidence_threshold and matches_script
+
+            logger.info(
+                f"Clip {clip_number} verification: "
+                f"verified={verified}, confidence={confidence_score:.2f}"
+            )
+
+            return ClipVerification(
+                verified=verified,
+                confidence_score=confidence_score,
+                visual_description=visual_description,
+                script_segment=script_segment,
+                alignment_feedback=alignment_feedback,
+                retry_count=0,
+            )
+
+        except Exception as e:
+            logger.error(f"Failed to verify clip {clip_number}: {e}", exc_info=True)
             return ClipVerification(
                 verified=False,
                 confidence_score=0.0,

@@ -13,6 +13,7 @@ from app.ad_agent.agents.video_compositor import VideoCompositorAgent
 from app.ad_agent.agents.clip_verifier import ClipVerifierAgent
 from app.database import get_db
 from app.database.gcs_storage import upload_file_to_gcs
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +45,9 @@ class AdCreationPipeline:
         self,
         gemini_api_key: Optional[str] = None,
         elevenlabs_api_key: Optional[str] = None,
+        anthropic_api_key: Optional[str] = None,
         enable_verification: bool = True,
-        verification_threshold: float = 0.6,
+        verification_threshold: Optional[float] = None,
     ):
         """
         Initialize pipeline with agents.
@@ -53,9 +55,14 @@ class AdCreationPipeline:
         Args:
             gemini_api_key: Google AI API key
             elevenlabs_api_key: ElevenLabs API key
+            anthropic_api_key: Anthropic API key (for agentic orchestrator)
             enable_verification: Whether to verify clips match script
             verification_threshold: Minimum confidence score to pass (0.0-1.0)
         """
+        self.gemini_api_key = gemini_api_key
+        self.elevenlabs_api_key = elevenlabs_api_key
+        self.anthropic_api_key = anthropic_api_key
+
         self.prompt_agent = PromptGeneratorAgent(api_key=gemini_api_key)
         self.video_agent = VideoGeneratorAgent()
         self.creative_agent = CreativeAdvisorAgent(api_key=gemini_api_key)
@@ -63,7 +70,7 @@ class AdCreationPipeline:
         self.video_compositor = VideoCompositorAgent()
         self.clip_verifier = ClipVerifierAgent(
             api_key=gemini_api_key,
-            confidence_threshold=verification_threshold
+            confidence_threshold=verification_threshold if verification_threshold is not None else settings.VERIFICATION_THRESHOLD,
         )
         self.enable_verification = enable_verification
 
@@ -335,8 +342,159 @@ class AdCreationPipeline:
 
         return job
 
+    async def create_ad_agentic(
+        self,
+        request: AdRequest,
+        user_id: str,
+    ) -> AdJob:
+        """
+        Execute ad creation using the agentic orchestrator (Claude as decision-maker).
+
+        Claude receives a system instruction and tools, then decides which tools
+        to call, in what order, and how to handle failures. This replaces the
+        hardcoded 5-step pipeline with an intelligent agent loop.
+
+        Args:
+            request: Ad creation request
+            user_id: User ID
+
+        Returns:
+            AdJob with final video URL
+        """
+        import base64
+        from app.ad_agent.orchestrator.agentic_orchestrator import AgenticOrchestrator
+        from app.ad_agent.orchestrator.tool_wrappers import ToolContext
+
+        job_id = f"ad_{datetime.utcnow().timestamp()}"
+        logger.info(f"[{job_id}] Starting AGENTIC ad creation pipeline")
+
+        if not self.anthropic_api_key:
+            raise ValueError("Anthropic API key is required for agentic pipeline")
+
+        # Reinitialize prompt_agent with storage client for GCS logging
+        self.prompt_agent = PromptGeneratorAgent(
+            api_key=self.gemini_api_key,
+            storage_client=self.storage,
+            job_id=job_id,
+            user_id=user_id,
+        )
+
+        # Upload character image to GCS
+        character_image_gcs_url = None
+        character_image_b64 = request.character_image
+        if request.character_image:
+            try:
+                # Strip data URI prefix if present
+                raw_b64 = request.character_image
+                if "," in raw_b64:
+                    raw_b64 = raw_b64.split(",")[1]
+
+                image_data = base64.b64decode(raw_b64)
+                import tempfile
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+                temp_file.write(image_data)
+                temp_file.close()
+
+                gcs_path = f"{user_id}/{job_id}/character_image.png"
+                await self.storage.upload_from_file(temp_file.name, gcs_path)
+                character_image_gcs_url = await self.storage.get_signed_url(gcs_path, expiration_days=7)
+
+                if os.path.exists(temp_file.name):
+                    os.remove(temp_file.name)
+
+                logger.info(f"[{job_id}] Uploaded character image to GCS")
+            except Exception as e:
+                logger.error(f"[{job_id}] Failed to upload character image to GCS: {e}")
+
+        # Create initial job record
+        job = AdJob(
+            job_id=job_id,
+            campaign_id=request.campaign_id,
+            user_id=user_id,
+            status=AdJobStatus.ORCHESTRATING,
+            script=request.script,
+            character_image="",
+            character_image_gcs_url=character_image_gcs_url,
+            character_name=request.character_name or "character",
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        await self._save_job(job)
+
+        try:
+            # Build tool context with all agent instances
+            tool_ctx = ToolContext(
+                job_id=job_id,
+                user_id=user_id,
+                character_image_gcs_url=character_image_gcs_url or "",
+                character_image_b64=character_image_b64,
+                aspect_ratio=request.aspect_ratio or settings.VEO_DEFAULT_ASPECT_RATIO,
+                resolution=request.resolution or settings.VEO_DEFAULT_RESOLUTION,
+                voice_id=request.voice_id,
+                campaign_id=request.campaign_id,
+                script=request.script,
+                prompt_agent=self.prompt_agent,
+                video_agent=self.video_agent,
+                clip_verifier=self.clip_verifier,
+                audio_agent=self.audio_agent,
+                video_compositor=self.video_compositor,
+                storage=self.storage,
+            )
+
+            # Create and run orchestrator
+            orchestrator = AgenticOrchestrator(
+                anthropic_api_key=self.anthropic_api_key,
+                tool_context=tool_ctx,
+                progress_callback=self.progress_callback,
+            )
+
+            result = await orchestrator.run(
+                script=request.script,
+                character_name=request.character_name or "character",
+                voice_id=request.voice_id,
+                aspect_ratio=request.aspect_ratio or settings.VEO_DEFAULT_ASPECT_RATIO,
+                resolution=request.resolution or settings.VEO_DEFAULT_RESOLUTION,
+            )
+
+            # Update job with result
+            final_url = result.get("final_video_url")
+            if final_url:
+                job.final_video_url = final_url
+                job.status = AdJobStatus.COMPLETED
+                job.completed_at = datetime.utcnow()
+                job.progress = 100
+                logger.info(f"[{job_id}] Agentic ad creation COMPLETED: {final_url}")
+            else:
+                error_msg = result.get("error", "Agent did not produce a final video URL")
+                job.status = AdJobStatus.FAILED
+                job.error_message = error_msg
+                logger.error(f"[{job_id}] Agentic ad creation FAILED: {error_msg}")
+
+        except Exception as e:
+            logger.error(f"[{job_id}] Agentic ad creation failed: {e}", exc_info=True)
+            job.status = AdJobStatus.FAILED
+            job.error_message = str(e)
+            job.updated_at = datetime.utcnow()
+
+        # Save final job state
+        await self._save_job(job)
+
+        # Emit completion event
+        if job.status == AdJobStatus.COMPLETED:
+            await self._emit_progress("complete", {
+                "status": "completed",
+                "final_video_url": job.final_video_url,
+                "job_id": job.job_id,
+            })
+        else:
+            await self._emit_progress("error", {
+                "message": job.error_message or "Unknown error",
+            })
+
+        return job
+
     # ========================================================================
-    # SIMPLIFIED 5-STEP WORKFLOW (Active)
+    # SIMPLIFIED 5-STEP WORKFLOW (Legacy fallback)
     # Old 10-step audio-first workflow archived in docs/OLD_CODE_ARCHIVE.md
     # ========================================================================
 
@@ -495,8 +653,8 @@ class AdCreationPipeline:
                             prompts=[full_veo_prompt],
                             character_image=current_image,
                             duration=7,
-                            aspect_ratio=request.aspect_ratio or "16:9",
-                            resolution=request.resolution or "720p",
+                            aspect_ratio=request.aspect_ratio or settings.VEO_DEFAULT_ASPECT_RATIO,
+                            resolution=request.resolution or settings.VEO_DEFAULT_RESOLUTION,
                             max_concurrent=1,
                             clip_number_offset=i,
                         ),
@@ -505,8 +663,8 @@ class AdCreationPipeline:
                         character_image=current_image,  # For retry
                         prompts=[full_veo_prompt],  # For retry
                         duration=7,
-                        aspect_ratio=request.aspect_ratio or "16:9",
-                        resolution=request.resolution or "720p",
+                        aspect_ratio=request.aspect_ratio or settings.VEO_DEFAULT_ASPECT_RATIO,
+                        resolution=request.resolution or settings.VEO_DEFAULT_RESOLUTION,
                     )
 
                     completed_clip = completed_clips[0]
@@ -530,8 +688,8 @@ class AdCreationPipeline:
                                 prompts=[full_veo_prompt],  # Use same full prompt
                                 character_image=request.character_image,  # Use original avatar
                                 duration=7,
-                                aspect_ratio=request.aspect_ratio or "16:9",
-                                resolution=request.resolution or "720p",
+                                aspect_ratio=request.aspect_ratio or settings.VEO_DEFAULT_ASPECT_RATIO,
+                                resolution=request.resolution or settings.VEO_DEFAULT_RESOLUTION,
                                 max_concurrent=1,
                                 clip_number_offset=i,
                             ),
@@ -540,8 +698,8 @@ class AdCreationPipeline:
                             character_image=request.character_image,  # For retry
                             prompts=[full_veo_prompt],  # For retry
                             duration=7,
-                            aspect_ratio=request.aspect_ratio or "16:9",
-                            resolution=request.resolution or "720p",
+                            aspect_ratio=request.aspect_ratio or settings.VEO_DEFAULT_ASPECT_RATIO,
+                            resolution=request.resolution or settings.VEO_DEFAULT_RESOLUTION,
                         )
 
                         completed_clip = retry_clips[0]
@@ -731,10 +889,10 @@ class AdCreationPipeline:
         if request.voice_id:
             voice_id = request.voice_id
         else:
-            # Try to find "Bella" voice
-            voice_id = await self.audio_agent.elevenlabs.find_voice_by_name("Bella")
+            # Try to find default voice
+            voice_id = await self.audio_agent.elevenlabs.find_voice_by_name(settings.DEFAULT_VOICE_NAME)
             if not voice_id:
-                logger.warning("Bella voice not found, skipping voice enhancement")
+                logger.warning(f"{settings.DEFAULT_VOICE_NAME} voice not found, skipping voice enhancement")
                 job.final_video_url = job.merged_video_url
                 return job
 
@@ -816,11 +974,11 @@ class AdCreationPipeline:
                 "campaign_id": job.campaign_id,
                 "job_id": job.job_id,
                 "ad_type": "video",
-                "model": "veo-3.1-generate-preview",
+                "model": settings.VEO_MODEL_ID,
                 "prompt": job.script,
                 "url": job.final_video_url,
-                "aspect_ratio": "16:9",
-                "duration": len(job.video_clips) * 7,
+                "aspect_ratio": settings.VEO_DEFAULT_ASPECT_RATIO,
+                "duration": len(job.video_clips) * settings.DEFAULT_CLIP_DURATION,
                 "tags": ["ai-generated", "veo-first-workflow"],
                 "created_at": job.created_at,
             }

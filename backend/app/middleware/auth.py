@@ -1,10 +1,8 @@
 """Authentication middleware and dependencies."""
 import logging
-from typing import Optional
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from app.config import settings
-from app.services.unified_api_client import unified_api_client, UnifiedAPIError
+from app.auth import verify_access_token
 from app.models.schemas import UserInfo
 
 logger = logging.getLogger(__name__)
@@ -15,22 +13,17 @@ security = HTTPBearer()
 async def verify_token(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> str:
-    """Verify JWT token via Unified API and return user ID."""
+    """Verify JWT token locally and return user ID."""
     token = credentials.credentials
+    payload = verify_access_token(token)
 
-    # Set token for unified API client
-    unified_api_client.set_token(token)
-
-    try:
-        # Verify token by fetching user info from Unified API
-        user_info = await unified_api_client.get_user_info()
-        return user_info.id
-    except UnifiedAPIError as e:
-        logger.error(f"Token verification failed: {e.message}")
+    if not payload:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
         )
+
+    return payload["user_id"]
 
 
 async def get_current_user_id(
@@ -43,22 +36,18 @@ async def get_current_user_id(
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> UserInfo:
-    """Get current user information from Unified API."""
+    """Get current user information from JWT token."""
     token = credentials.credentials
-    unified_api_client.set_token(token)
+    payload = verify_access_token(token)
 
-    try:
-        # Verify token with Unified API and get user info
-        user_info = await unified_api_client.get_user_info()
-        return user_info
-
-    except UnifiedAPIError as e:
-        if e.status_code == 401:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid or expired token",
-            )
+    if not payload:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to verify user: {e.message}",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
         )
+
+    return UserInfo(
+        user_id=payload["user_id"],
+        email=payload.get("email", ""),
+        name=payload.get("name"),
+    )

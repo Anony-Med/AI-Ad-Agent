@@ -154,6 +154,7 @@ def get_user_secret(
             "google": ["unified_api_google_api_key", "GOOGLE_API_KEY"],
             "gemini": ["unified_api_google_api_key", "GOOGLE_API_KEY"],
             "openai": ["unified_api_openai_api_key", "openai-api-key"],
+            "anthropic": ["anthropic-api-key"],
         }
 
         if provider in alternate_names:
@@ -180,49 +181,34 @@ def get_ai_agent_credentials(user_id: str = "global") -> dict:
             "GEMINI_API_KEY": "...",       # Google Gemini for text generation
             "GOOGLE_AI_API_KEY": "...",    # Alias for Gemini
             "ELEVENLABS_API_KEY": "...",   # ElevenLabs for audio
-            "UNIFIED_API_BASE_URL": "..."  # Unified API endpoint
         }
 
     Example:
         >>> creds = get_ai_agent_credentials("user123")
         >>> gemini_key = creds.get("GEMINI_API_KEY")
     """
-    # Determine if we're fetching user-specific or global credentials
-    fallback = (user_id == "global")
-
     credentials = {}
 
-    # Gemini API Key (for prompt generation and creative suggestions)
-    gemini_key = get_user_secret(user_id, "gemini", "api_key", fallback_to_global=fallback)
-    if not gemini_key:
-        # Try google as fallback (compatible with unified API naming)
-        gemini_key = get_user_secret(user_id, "google", "api_key", fallback_to_global=fallback)
+    if user_id == "global":
+        # Global startup: fetch from known secret names directly
+        gemini_key = get_secret("unified_api_google_api_key")
+        elevenlabs_key = get_secret("eleven-labs-api-key")
+    else:
+        # User-specific: use fallback chain
+        gemini_key = get_user_secret(user_id, "gemini", "api_key", fallback_to_global=True)
+        if not gemini_key:
+            gemini_key = get_user_secret(user_id, "google", "api_key", fallback_to_global=True)
+        elevenlabs_key = get_user_secret(user_id, "elevenlabs", "api_key", fallback_to_global=True)
+
     if gemini_key:
         credentials["GEMINI_API_KEY"] = gemini_key
         credentials["GOOGLE_AI_API_KEY"] = gemini_key  # Alias
 
-    # ElevenLabs API Key (for audio: TTS, music, SFX)
-    elevenlabs_key = get_user_secret(user_id, "elevenlabs", "api_key", fallback_to_global=fallback)
     if elevenlabs_key:
         credentials["ELEVENLABS_API_KEY"] = elevenlabs_key
 
-    # Unified API Base URL (same for all users, but configurable per environment)
-    unified_api_url = get_secret("ai_ad_agent_unified_api_url")
-    if unified_api_url:
-        credentials["UNIFIED_API_BASE_URL"] = unified_api_url
-    else:
-        # Fallback to environment variable
-        credentials["UNIFIED_API_BASE_URL"] = os.getenv(
-            "UNIFIED_API_BASE_URL",
-            "https://unified-api-interface-994684344365.europe-west1.run.app"
-        )
-
-    # GCS Bucket Name
-    bucket_name = get_secret("ai_ad_agent_gcs_bucket")
-    if bucket_name:
-        credentials["GCS_BUCKET_NAME"] = bucket_name
-    else:
-        credentials["GCS_BUCKET_NAME"] = os.getenv("GCS_BUCKET_NAME", "")
+    # GCS Bucket Name (from env, or Secret Manager if stored there)
+    credentials["GCS_BUCKET_NAME"] = os.getenv("GCS_BUCKET_NAME", "")
 
     return credentials
 

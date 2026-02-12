@@ -4,6 +4,7 @@ import os
 import tempfile
 from typing import List, Optional
 from app.ad_agent.utils.video_utils import VideoProcessor
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +79,8 @@ class VideoCompositorAgent:
         music_path: Optional[str] = None,
         sfx_path: Optional[str] = None,
         output_path: Optional[str] = None,
-        music_volume: float = 0.3,
-        sfx_volume: float = 0.7,
+        music_volume: Optional[float] = None,
+        sfx_volume: Optional[float] = None,
     ) -> str:
         """
         Add music and sound effects to video.
@@ -100,6 +101,9 @@ class VideoCompositorAgent:
                 delete=False,
                 suffix="_final.mp4",
             ).name
+
+        music_volume = music_volume if music_volume is not None else settings.BACKGROUND_MUSIC_VOLUME
+        sfx_volume = sfx_volume if sfx_volume is not None else settings.SFX_VOLUME
 
         logger.info("Adding audio layers to video")
 
@@ -176,7 +180,7 @@ class VideoCompositorAgent:
                 overlay_configs.append({
                     "text": text,
                     "position": "bottom" if i % 2 == 0 else "top",
-                    "font_size": 36,
+                    "font_size": settings.TEXT_OVERLAY_FONT_SIZE,
                     "font_color": "white",
                     "box_color": "black@0.5",
                     "start_time": i * segment_duration,
@@ -254,8 +258,8 @@ class VideoCompositorAgent:
         logo_image_base64: str,
         output_path: Optional[str] = None,
         position: str = "bottom-right",
-        size: int = 150,
-        opacity: float = 0.8,
+        size: Optional[int] = None,
+        opacity: Optional[float] = None,
         timing: str = "always",
     ) -> str:
         """
@@ -273,6 +277,9 @@ class VideoCompositorAgent:
         Returns:
             Path to video with logo
         """
+        size = size if size is not None else settings.LOGO_DEFAULT_SIZE
+        opacity = opacity if opacity is not None else settings.LOGO_DEFAULT_OPACITY
+
         if timing == "none":
             logger.info("Logo timing set to 'none', skipping logo overlay")
             return video_path

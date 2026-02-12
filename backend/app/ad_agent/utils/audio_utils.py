@@ -6,6 +6,7 @@ import tempfile
 from typing import List, Dict, Tuple
 from pydub import AudioSegment
 from pydub.silence import detect_nonsilent
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +79,8 @@ class AudioAnalyzer:
             # min_silence_len: minimum length of silence to be considered a break
             nonsilent_ranges = detect_nonsilent(
                 audio,
-                min_silence_len=300,  # 300ms minimum silence
-                silence_thresh=-40,  # -40 dBFS
+                min_silence_len=settings.AUDIO_MIN_SILENCE_MS,
+                silence_thresh=settings.AUDIO_SILENCE_THRESHOLD_DBFS,
             )
 
             logger.info(f"Detected {len(nonsilent_ranges)} non-silent ranges")
@@ -141,7 +142,7 @@ class AudioAnalyzer:
         target_ms: int,
         nonsilent_ranges: List[Tuple[int, int]],
         max_duration_ms: int,
-        tolerance_ms: int = 2000,
+        tolerance_ms: int = None,
     ) -> int:
         """
         Find the nearest silence break to the target position.
@@ -155,6 +156,8 @@ class AudioAnalyzer:
         Returns:
             Position in milliseconds for the split
         """
+        tolerance_ms = tolerance_ms if tolerance_ms is not None else settings.AUDIO_BREAK_TOLERANCE_MS
+
         # Look for gaps (silence) between non-silent ranges
         silence_breaks = []
 
@@ -241,17 +244,17 @@ class AudioAnalyzer:
 
             speed_factor = current_duration / target_duration
 
-            # Limit speed adjustment to 0.8x - 1.3x for naturalness
-            if speed_factor < 0.8:
+            # Limit speed adjustment for naturalness
+            if speed_factor < settings.AUDIO_MIN_SPEED_FACTOR:
                 logger.warning(
-                    f"Speed adjustment {speed_factor:.2f}x is too slow, capping at 0.8x"
+                    f"Speed adjustment {speed_factor:.2f}x is too slow, capping at {settings.AUDIO_MIN_SPEED_FACTOR}x"
                 )
-                speed_factor = 0.8
-            elif speed_factor > 1.3:
+                speed_factor = settings.AUDIO_MIN_SPEED_FACTOR
+            elif speed_factor > settings.AUDIO_MAX_SPEED_FACTOR:
                 logger.warning(
-                    f"Speed adjustment {speed_factor:.2f}x is too fast, capping at 1.3x"
+                    f"Speed adjustment {speed_factor:.2f}x is too fast, capping at {settings.AUDIO_MAX_SPEED_FACTOR}x"
                 )
-                speed_factor = 1.3
+                speed_factor = settings.AUDIO_MAX_SPEED_FACTOR
 
             logger.info(
                 f"Adjusting audio speed: {current_duration:.2f}s -> {target_duration:.2f}s "
@@ -271,7 +274,7 @@ class AudioAnalyzer:
                 ffmpeg_cmd,
                 capture_output=True,
                 text=True,
-                timeout=60,
+                timeout=settings.AUDIO_SPEED_TIMEOUT,
             )
 
             if result.returncode != 0:

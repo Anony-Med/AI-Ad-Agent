@@ -49,6 +49,18 @@ class FirestoreDB:
         doc = self.db.collection("users").document(user_id).get()
         return doc.to_dict() if doc.exists else None
 
+    async def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
+        """Get user by email (used for login)."""
+        docs = list(
+            self.db.collection("users")
+            .where(filter=FieldFilter("email", "==", email))
+            .limit(1)
+            .stream()
+        )
+        if docs:
+            return docs[0].to_dict()
+        return None
+
     async def update_user(self, user_id: str, **updates) -> Dict[str, Any]:
         """Update user data."""
         updates["updated_at"] = datetime.utcnow()

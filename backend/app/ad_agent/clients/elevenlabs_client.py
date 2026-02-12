@@ -3,6 +3,7 @@ import os
 import logging
 from typing import Optional, Dict, Any
 import httpx
+from app.config import settings
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 logger = logging.getLogger(__name__)
@@ -22,8 +23,8 @@ class ElevenLabsClient:
         if not self.api_key:
             raise ValueError("ELEVENLABS_API_KEY environment variable required")
 
-        self.base_url = "https://api.elevenlabs.io"
-        self.timeout = 300  # 5 minutes for longer generations
+        self.base_url = settings.ELEVENLABS_API_BASE_URL
+        self.timeout = settings.ELEVENLABS_TIMEOUT
 
     @retry(
         stop=stop_after_attempt(3),
@@ -32,12 +33,12 @@ class ElevenLabsClient:
     async def text_to_speech(
         self,
         text: str,
-        voice_id: str = "21m00Tcm4TlvDq8ikWAM",  # Default voice (Rachel)
-        model_id: str = "eleven_turbo_v2_5",
-        stability: float = 0.5,
-        similarity_boost: float = 0.75,
-        speed: float = 1.0,
-        output_format: str = "mp3_44100_128",
+        voice_id: Optional[str] = None,
+        model_id: Optional[str] = None,
+        stability: Optional[float] = None,
+        similarity_boost: Optional[float] = None,
+        speed: Optional[float] = None,
+        output_format: Optional[str] = None,
     ) -> bytes:
         """
         Generate speech from text.
@@ -54,6 +55,14 @@ class ElevenLabsClient:
         Returns:
             Audio bytes (MP3)
         """
+        # Resolve defaults from settings
+        voice_id = voice_id or settings.DEFAULT_VOICE_ID
+        model_id = model_id or settings.ELEVENLABS_TTS_MODEL
+        stability = stability if stability is not None else settings.ELEVENLABS_STABILITY
+        similarity_boost = similarity_boost if similarity_boost is not None else settings.ELEVENLABS_SIMILARITY_BOOST
+        speed = speed if speed is not None else settings.ELEVENLABS_SPEED
+        output_format = output_format or settings.ELEVENLABS_OUTPUT_FORMAT
+
         url = f"{self.base_url}/v1/text-to-speech/{voice_id}"
 
         payload = {
@@ -63,7 +72,7 @@ class ElevenLabsClient:
                 "stability": stability,
                 "similarity_boost": similarity_boost,
                 "speed": speed,
-                "use_speaker_boost": True,
+                "use_speaker_boost": settings.ELEVENLABS_USE_SPEAKER_BOOST,
             },
         }
 
@@ -229,8 +238,8 @@ class ElevenLabsClient:
         self,
         audio_file_path: str,
         voice_id: str,
-        model_id: str = "eleven_english_sts_v2",
-        output_format: str = "mp3_44100_128",
+        model_id: Optional[str] = None,
+        output_format: Optional[str] = None,
     ) -> bytes:
         """
         Apply voice conversion to an audio file or URL.
@@ -248,6 +257,9 @@ class ElevenLabsClient:
             Converted audio bytes (MP3)
         """
         url = f"{self.base_url}/v1/speech-to-speech/{voice_id}"
+
+        model_id = model_id or settings.ELEVENLABS_STS_MODEL
+        output_format = output_format or settings.ELEVENLABS_OUTPUT_FORMAT
 
         headers = {"xi-api-key": self.api_key}
         params = {"model_id": model_id, "output_format": output_format}
