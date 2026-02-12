@@ -13,6 +13,7 @@ class AdJobStatus(str, Enum):
     GENERATING_VOICEOVER = "generating_voiceover"  # NEW: Generate audio first
     SEGMENTING_AUDIO = "segmenting_audio"  # NEW: Segment audio by script
     GENERATING_PROMPTS = "generating_prompts"
+    GENERATING_SCENE_IMAGES = "generating_scene_images"
     GENERATING_VIDEOS = "generating_videos"
     VERIFYING_CLIPS = "verifying_clips"  # Verify clips match script
     MERGING_VIDEOS = "merging_videos"
@@ -30,9 +31,8 @@ class ClipVerification(BaseModel):
     """Verification results for a video clip."""
     verified: bool = False
     confidence_score: float = 0.0  # 0.0 to 1.0
-    visual_description: Optional[str] = None  # What Gemini Vision sees in the clip
+    description: Optional[str] = None  # Gemini's analysis description
     script_segment: Optional[str] = None  # Expected script content
-    alignment_feedback: Optional[str] = None  # How well it matches
     retry_count: int = 0
 
 

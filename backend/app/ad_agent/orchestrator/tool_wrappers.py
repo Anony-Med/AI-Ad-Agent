@@ -16,6 +16,7 @@ from app.ad_agent.agents.video_generator import VideoGeneratorAgent
 from app.ad_agent.agents.clip_verifier import ClipVerifierAgent
 from app.ad_agent.agents.audio_compositor import AudioCompositorAgent
 from app.ad_agent.agents.video_compositor import VideoCompositorAgent
+from app.ad_agent.clients.gemini_client import GeminiClient
 from app.database.gcs_storage import GCSStorage, upload_file_to_gcs
 from app.config import settings
 
@@ -42,35 +43,29 @@ class ToolContext:
     audio_agent: Optional[AudioCompositorAgent] = None
     video_compositor: Optional[VideoCompositorAgent] = None
     storage: Optional[GCSStorage] = None
+    gemini_client: Optional[GeminiClient] = None
 
-    # Track generated clips for merge step
+    # Track generated artifacts
     generated_clip_urls: Dict[int, str] = field(default_factory=dict)
+    generated_scene_image_urls: Dict[int, str] = field(default_factory=dict)
 
 
 async def tool_generate_veo_prompts(ctx: ToolContext, params: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Generate Veo 3.1 video prompts from a script.
-
-    Wraps PromptGeneratorAgent.generate_prompts_with_segments().
-    Caps output at 2 clips max for the 15-second ad limit.
-    """
+    """Gemini text generation: break script into segments with Veo prompts."""
     try:
         script = params["script"]
+        system_prompt = params["system_prompt"]
+        num_segments = params["num_segments"]
         character_name = params.get("character_name", "character")
 
-        logger.info(f"[{ctx.job_id}] Tool: generate_veo_prompts (script={len(script)} chars)")
+        logger.info(f"[{ctx.job_id}] Tool: generate_veo_prompts (script={len(script)} chars, num_segments={num_segments})")
 
         prompts, segments = await ctx.prompt_agent.generate_prompts_with_segments(
             script=script,
+            system_prompt=system_prompt,
+            num_segments=num_segments,
             character_name=character_name,
-            max_clip_duration=settings.MAX_CLIP_DURATION,
         )
-
-        # Cap at max clips (max ad duration)
-        if len(prompts) > settings.MAX_CLIPS_PER_AD:
-            logger.warning(f"[{ctx.job_id}] Capping from {len(prompts)} to {settings.MAX_CLIPS_PER_AD} clips ({settings.MAX_AD_DURATION_SECONDS}s limit)")
-            prompts = prompts[:settings.MAX_CLIPS_PER_AD]
-            segments = segments[:settings.MAX_CLIPS_PER_AD]
 
         result = {
             "prompts": [
@@ -92,93 +87,198 @@ async def tool_generate_veo_prompts(ctx: ToolContext, params: Dict[str, Any]) ->
         return {"error": str(e), "error_type": "prompt_generation_failed"}
 
 
-async def tool_generate_video_clip(ctx: ToolContext, params: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Generate a single video clip using Veo 3.1.
+async def tool_generate_scene_image(ctx: ToolContext, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Gemini image generation: create a scene image from prompt + character reference."""
+    try:
+        prompt = params["prompt"]
+        clip_number = params["clip_number"]
 
-    Blocks until the video is fully generated (2-5 minutes).
-    Always uses the original character image from ctx (not from Claude's message).
-    Saves the clip to GCS and returns only the URL.
+        logger.info(f"[{ctx.job_id}] Tool: generate_scene_image (clip={clip_number})")
+
+        if not ctx.gemini_client:
+            return {
+                "status": "failed",
+                "clip_number": clip_number,
+                "error": "Gemini client not configured for image generation",
+                "error_type": "configuration_error",
+            }
+
+        image_bytes = await ctx.gemini_client.generate_scene_image(
+            prompt=prompt,
+            character_image_b64=ctx.character_image_b64,
+            aspect_ratio=ctx.aspect_ratio,
+        )
+
+        # Save to GCS
+        temp_image = tempfile.NamedTemporaryFile(delete=False, suffix=".png").name
+        try:
+            with open(temp_image, "wb") as f:
+                f.write(image_bytes)
+
+            gcs_path = f"{ctx.user_id}/{ctx.job_id}/scene_images/clip_{clip_number}.png"
+            await ctx.storage.upload_from_file(temp_image, gcs_path)
+            scene_image_gcs_url = await ctx.storage.get_signed_url(gcs_path, expiration_days=7)
+
+            ctx.generated_scene_image_urls[clip_number] = scene_image_gcs_url
+
+            logger.info(f"[{ctx.job_id}] Scene image for clip {clip_number} saved to GCS")
+
+            return {
+                "status": "completed",
+                "clip_number": clip_number,
+                "scene_image_gcs_url": scene_image_gcs_url,
+            }
+        finally:
+            if os.path.exists(temp_image):
+                os.remove(temp_image)
+
+    except Exception as e:
+        logger.error(f"[{ctx.job_id}] generate_scene_image failed: {e}", exc_info=True)
+        return {
+            "status": "failed",
+            "clip_number": params.get("clip_number", -1),
+            "error": str(e),
+            "error_type": "image_generation_failed",
+        }
+
+
+async def tool_generate_video_clip(ctx: ToolContext, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Veo 3.1 image-to-video: generate video clip variants from a scene image with lip-sync.
+
+    Retries automatically when Veo returns fewer variants than requested,
+    asking only for the remaining count each time until the desired total is collected.
     """
     try:
         clip_number = params["clip_number"]
         veo_prompt = params["veo_prompt"]
         script_segment = params["script_segment"]
-        duration_seconds = params.get("duration_seconds", 8)
+        scene_image_gcs_url = params.get("scene_image_gcs_url")
 
-        logger.info(f"[{ctx.job_id}] Tool: generate_video_clip (clip={clip_number}, duration={duration_seconds}s)")
+        if not scene_image_gcs_url:
+            return {
+                "status": "failed",
+                "clip_number": clip_number,
+                "error": "scene_image_gcs_url is required.",
+            }
+
+        desired_count = settings.VEO_SAMPLE_COUNT
+        max_collection_retries = 3  # max extra attempts to collect remaining variants
+
+        logger.info(f"[{ctx.job_id}] Tool: generate_video_clip (clip={clip_number}, desired_variants={desired_count})")
+
+        # Download scene image from GCS and encode as base64 for Veo
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as http_client:
+                resp = await http_client.get(scene_image_gcs_url)
+                resp.raise_for_status()
+                scene_image_bytes = resp.content
+            starting_image_b64 = base64.b64encode(scene_image_bytes).decode("utf-8")
+        except Exception as img_err:
+            return {
+                "status": "failed",
+                "clip_number": clip_number,
+                "error": f"Failed to download scene image: {img_err}",
+            }
 
         # Combine script and visual prompt for Veo (lip-sync requires dialogue)
         full_veo_prompt = f"Script/Dialogue: {script_segment}\n\nVisual Description: {veo_prompt}"
 
-        # Generate clip using existing agent (uses character_image_b64 from context)
-        clips = await ctx.video_agent.generate_all_clips(
-            prompts=[full_veo_prompt],
-            character_image=ctx.character_image_b64,
-            duration=duration_seconds,
-            aspect_ratio=ctx.aspect_ratio,
-            resolution=ctx.resolution,
-            max_concurrent=1,
-            clip_number_offset=clip_number,
-        )
+        # Collect video variants across retries
+        all_videos = []  # list of base64 video strings
 
-        if not clips or clips[0].status == "failed":
-            error_msg = clips[0].error if clips else "No clip generated"
+        for attempt in range(1 + max_collection_retries):
+            remaining = desired_count - len(all_videos)
+            if remaining <= 0:
+                break
+
+            if attempt > 0:
+                logger.info(
+                    f"[{ctx.job_id}] Clip {clip_number}: collected {len(all_videos)}/{desired_count} variants, "
+                    f"retrying for {remaining} more (attempt {attempt + 1})"
+                )
+
+            # Create Veo job requesting only the remaining count
+            clip = await ctx.video_agent.generate_video_clip(
+                prompt=full_veo_prompt,
+                character_image=starting_image_b64,
+                clip_number=clip_number,
+                duration=8,
+                aspect_ratio=ctx.aspect_ratio,
+                resolution=ctx.resolution,
+                sample_count=remaining,
+            )
+
+            if clip.status == "failed":
+                if all_videos:
+                    logger.warning(
+                        f"[{ctx.job_id}] Clip {clip_number}: job creation failed on retry, "
+                        f"proceeding with {len(all_videos)} variant(s) collected so far"
+                    )
+                    break
+                return {
+                    "status": "failed",
+                    "clip_number": clip_number,
+                    "error": clip.error or "Video generation job creation failed",
+                    "error_type": "content_policy" if _is_content_policy_error(clip.error) else "generation_failed",
+                }
+
+            # Wait for video variants to complete
+            try:
+                result = await ctx.video_agent.wait_for_video_completion(
+                    job_id=clip.veo_job_id,
+                    timeout=settings.VIDEO_GENERATION_TIMEOUT,
+                    return_all_videos=True,
+                )
+                videos = result.get("videos", [])
+                if videos:
+                    all_videos.extend(videos)
+                    logger.info(
+                        f"[{ctx.job_id}] Clip {clip_number}: received {len(videos)} variant(s), "
+                        f"total now {len(all_videos)}/{desired_count}"
+                    )
+            except Exception as wait_err:
+                if all_videos:
+                    logger.warning(
+                        f"[{ctx.job_id}] Clip {clip_number}: wait failed on retry ({wait_err}), "
+                        f"proceeding with {len(all_videos)} variant(s) collected so far"
+                    )
+                    break
+                raise  # re-raise if we have nothing
+
+        if not all_videos:
             return {
                 "status": "failed",
                 "clip_number": clip_number,
-                "error": error_msg,
-                "error_type": "content_policy" if _is_content_policy_error(error_msg) else "generation_failed",
+                "error": "Veo returned no videos after all attempts",
+                "error_type": "generation_failed",
             }
 
-        # Wait for clip completion (blocking, with retries)
-        completed_clips = await ctx.video_agent.wait_for_all_clips(
-            clips=clips,
-            timeout=settings.VIDEO_GENERATION_TIMEOUT,
-            max_retries=settings.MAX_CLIP_RETRIES,
-            character_image=ctx.character_image_b64,
-            prompts=[full_veo_prompt],
-            duration=duration_seconds,
-            aspect_ratio=ctx.aspect_ratio,
-            resolution=ctx.resolution,
-        )
+        # Save all collected variants to GCS
+        variant_urls = []
+        for i, video_b64 in enumerate(all_videos):
+            temp_video = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+            try:
+                video_bytes = base64.b64decode(video_b64)
+                with open(temp_video, "wb") as f:
+                    f.write(video_bytes)
 
-        completed_clip = completed_clips[0]
+                gcs_path = f"{ctx.user_id}/{ctx.job_id}/clips/clip_{clip_number}_v{i}.mp4"
+                await ctx.storage.upload_from_file(temp_video, gcs_path)
+                variant_url = await ctx.storage.get_signed_url(gcs_path, expiration_days=7)
+                variant_urls.append(variant_url)
+            finally:
+                if os.path.exists(temp_video):
+                    os.remove(temp_video)
 
-        if completed_clip.status != "completed" or not completed_clip.video_b64:
-            error_msg = completed_clip.error or "Video generation failed or returned no data"
-            return {
-                "status": "failed",
-                "clip_number": clip_number,
-                "error": error_msg,
-                "error_type": "content_policy" if _is_content_policy_error(error_msg) else "generation_failed",
-            }
+        logger.info(f"[{ctx.job_id}] Clip {clip_number}: {len(variant_urls)} variants saved to GCS")
 
-        # Save clip to GCS
-        temp_video = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
-        try:
-            video_bytes = base64.b64decode(completed_clip.video_b64)
-            with open(temp_video, "wb") as f:
-                f.write(video_bytes)
-
-            gcs_path = f"{ctx.user_id}/{ctx.job_id}/clips/clip_{clip_number}.mp4"
-            await ctx.storage.upload_from_file(temp_video, gcs_path)
-            clip_gcs_url = await ctx.storage.get_signed_url(gcs_path, expiration_days=7)
-
-            # Track clip URL for merge step
-            ctx.generated_clip_urls[clip_number] = clip_gcs_url
-
-            logger.info(f"[{ctx.job_id}] Clip {clip_number} saved to GCS")
-
-            return {
-                "status": "completed",
-                "clip_number": clip_number,
-                "clip_gcs_url": clip_gcs_url,
-                "duration_seconds": duration_seconds,
-            }
-        finally:
-            if os.path.exists(temp_video):
-                os.remove(temp_video)
+        return {
+            "status": "completed",
+            "clip_number": clip_number,
+            "clip_variant_urls": variant_urls,
+            "variants_generated": len(variant_urls),
+        }
 
     except Exception as e:
         logger.error(f"[{ctx.job_id}] generate_video_clip failed: {e}", exc_info=True)
@@ -191,32 +291,35 @@ async def tool_generate_video_clip(ctx: ToolContext, params: Dict[str, Any]) -> 
 
 
 async def tool_verify_video_clip(ctx: ToolContext, params: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Verify a generated clip matches its script using Gemini Vision.
-
-    Downloads the clip from GCS URL internally. Returns only text analysis.
-    """
+    """Gemini Vision: analyze a video clip to verify it matches the script."""
     try:
         clip_number = params["clip_number"]
         clip_gcs_url = params["clip_gcs_url"]
+        system_prompt = params["system_prompt"]
         script_segment = params["script_segment"]
         veo_prompt = params["veo_prompt"]
 
-        logger.info(f"[{ctx.job_id}] Tool: verify_video_clip (clip={clip_number})")
+        # Extract variant index from URL pattern clip_{N}_v{M}.mp4
+        import re
+        variant_match = re.search(r'clip_\d+_v(\d+)\.mp4', clip_gcs_url)
+        variant_index = int(variant_match.group(1)) if variant_match else 0
+
+        logger.info(f"[{ctx.job_id}] Tool: verify_video_clip (clip={clip_number}, variant={variant_index})")
 
         verification = await ctx.clip_verifier.verify_clip_from_url(
             clip_gcs_url=clip_gcs_url,
+            system_prompt=system_prompt,
             script_segment=script_segment,
             veo_prompt=veo_prompt,
             clip_number=clip_number,
+            variant_index=variant_index,
         )
 
         result = {
             "clip_number": clip_number,
             "verified": verification.verified,
             "confidence_score": verification.confidence_score,
-            "visual_description": verification.visual_description or "",
-            "alignment_feedback": verification.alignment_feedback or "",
+            "description": verification.description or "",
         }
 
         logger.info(
@@ -231,21 +334,19 @@ async def tool_verify_video_clip(ctx: ToolContext, params: Dict[str, Any]) -> Di
             "clip_number": params.get("clip_number", -1),
             "verified": False,
             "confidence_score": 0.0,
-            "visual_description": "",
-            "alignment_feedback": f"Verification failed with error: {str(e)}",
+            "description": f"Verification failed with error: {str(e)}",
             "error": str(e),
         }
 
 
 async def tool_merge_video_clips(ctx: ToolContext, params: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Merge verified video clips into a single video using ffmpeg.
-
-    Streams from GCS URLs (no local download of source clips).
-    Uploads merged result to GCS.
-    """
+    """ffmpeg: concatenate multiple video clips into one."""
     try:
         clip_gcs_urls = params["clip_gcs_urls"]
+
+        # Track selected clip URLs (for duration calculation in finalize)
+        for i, url in enumerate(clip_gcs_urls):
+            ctx.generated_clip_urls[i] = url
 
         logger.info(f"[{ctx.job_id}] Tool: merge_video_clips ({len(clip_gcs_urls)} clips)")
 
@@ -287,12 +388,7 @@ async def tool_merge_video_clips(ctx: ToolContext, params: Dict[str, Any]) -> Di
 
 
 async def tool_enhance_voice(ctx: ToolContext, params: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Enhance the voice in a video using ElevenLabs Voice Changer.
-
-    Extracts audio, applies voice changer, replaces audio track.
-    All processing uses streaming from GCS URLs (no full video download).
-    """
+    """ElevenLabs Speech-to-Speech: enhance voice quality in a video."""
     try:
         merged_video_url = params["merged_video_url"]
         voice_id = params.get("voice_id") or ctx.voice_id
@@ -358,9 +454,7 @@ async def tool_enhance_voice(ctx: ToolContext, params: Dict[str, Any]) -> Dict[s
 
 
 async def tool_upload_and_finalize(ctx: ToolContext, params: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Create an asset record in Firestore and finalize the ad.
-    """
+    """Firestore: create an asset record for the final video."""
     try:
         final_video_url = params["final_video_url"]
 

@@ -16,6 +16,7 @@ from app.ad_agent.clients.anthropic_client import AnthropicClient
 from app.ad_agent.orchestrator.tool_wrappers import (
     ToolContext,
     tool_generate_veo_prompts,
+    tool_generate_scene_image,
     tool_generate_video_clip,
     tool_verify_video_clip,
     tool_merge_video_clips,
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 # Map tool names to handler functions
 TOOL_HANDLERS = {
     "generate_veo_prompts": tool_generate_veo_prompts,
+    "generate_scene_image": tool_generate_scene_image,
     "generate_video_clip": tool_generate_video_clip,
     "verify_video_clip": tool_verify_video_clip,
     "merge_video_clips": tool_merge_video_clips,
@@ -38,7 +40,8 @@ TOOL_HANDLERS = {
 
 # Progress mapping: tool name -> (job status string, base progress %)
 PROGRESS_MAP = {
-    "generate_veo_prompts": ("generating_prompts", 15),
+    "generate_veo_prompts": ("generating_prompts", 10),
+    "generate_scene_image": ("generating_scene_images", None),  # calculated per clip
     "generate_video_clip": ("generating_videos", None),  # calculated per clip
     "verify_video_clip": ("verifying_clips", None),
     "merge_video_clips": ("merging_videos", 70),
@@ -50,161 +53,217 @@ SYSTEM_INSTRUCTION = """You are an AI video ad creation agent. Your job is to cr
 
 ## What You Have
 - A script (the dialogue the character will speak)
-- A character image (already uploaded to cloud storage — you don't need to handle it)
+- A character reference image (already uploaded to cloud storage)
 - Configuration: voice preference, aspect ratio, resolution
 
-## Your Goal
-Create a final video ad (maximum 15 seconds total, maximum 2 clips) by:
-1. Breaking the script into 1-2 segments and generating Veo video prompts
-2. Generating video clips using Veo 3.1 (image-to-video with built-in lip-sync)
-3. Verifying each clip matches the script (MANDATORY — every clip must be verified)
-4. If verification fails (confidence < 0.6), regenerate the clip with an adjusted prompt (max 2 retries per clip)
-5. Merging the verified clips into one video
-6. Enhancing the voice using ElevenLabs Voice Changer
-7. Uploading the final video and creating an asset record
+## Workflow (follow this order)
+
+### Step 1: Generate Prompts
+Call `generate_veo_prompts` with:
+- The full script
+- `num_segments`: 2 (for a 15-second ad with ~7s per clip)
+- `system_prompt`: Use the following system instruction for Gemini:
+
+```
+You are an expert video director specialized in creating prompts for Google Veo 3.1.
+
+Create DYNAMIC, ACTION-ORIENTED video ad prompts where a character moves, demonstrates, and shows things related to what they're saying, AND extract corresponding script segments.
+
+REQUIREMENTS:
+- Each segment should be 7 seconds of speaking time (15-20 words, 60-80 characters)
+- Put the EXACT script text in the script_segments array
+- After the script segment ends, the avatar should STOP SPEAKING - just smile, walk, or gesture silently
+- Show variety in the segments, it shouldn not look too boring. Like the character simply walking in the whole video would look boring. Change poses, background, actions to show variety.
+- NO text overlays, captions, or on-screen text in prompts
+- Enforce warm, Friendly, approachable voice for females.
+
+Output format: Return a JSON object with two arrays:
+- "prompts": Array of Veo 3.1 video prompts (visuals and actions ONLY)
+- "script_segments": Array of EXACT script text from the original script
+```
+
+### Step 2: Generate Scene Images (for each clip)
+For EACH clip, call `generate_scene_image` with a prompt and the clip_number.
+The tool automatically attaches the character's reference photo alongside your prompt. The image model will see BOTH your text prompt AND the reference photo.
+Your prompt should include:
+- An instruction to use the attached reference photo as the character (e.g., "Generate a photorealistic image of the person shown in the reference photo...")
+- The visual scene description (camera angle, setting, lighting, environment)
+- That the image should be suitable as a starting frame for a video ad
+- Use cream and tans or warm colors for outfit.
+
+This step is MANDATORY — every clip needs a scene image before video generation.
+If scene image generation fails, retry with a simplified description (max 2 retries per clip).
+
+### Step 3: Generate Video Clips (for each clip)
+For EACH clip, call `generate_video_clip` with the veo_prompt, script_segment, clip_number, AND the `scene_image_gcs_url` from Step 2.
+The scene_image_gcs_url is required — the tool will fail without it.
+The tool generates multiple video variants per clip in a single API call and returns all their GCS URLs in `clip_variant_urls`.
+
+### Step 4: Verify and Select Clips (for each clip)
+For EACH clip, verify the variants returned by Step 3 by calling `verify_video_clip` on each variant URL.
+Pick the variant with the highest confidence score that passes the threshold (>= 0.95).
+If no variant passes, retry from Step 2 with an adjusted prompt (max 2 retries per clip).
+
+Use the following `system_prompt` for verification:
+
+```
+You are a video content analyzer. Analyze BOTH the visual content AND the spoken audio/dialogue in the provided video.
+
+Provide response in JSON format with:         
+
+1) confidence_score: Float 0.0-1.0 calculated as follows:
+- Dialogue accuracy : Does the character speak the COMPLETE expected script? Deduct heavily for missing words, gibberish, or words that don't match the expected script. Each word should be clearly articulated.
+- Visual alignment : Does the scene match the visual prompt?
+- Video quality : No abrupt starts/ends.
+2) description: Description of your analysis.
+
+Be strict with your analysis.
+```
+
+### Step 5: Merge Clips
+Call `merge_video_clips` with the selected clip variant URLs (one per clip, the best from Step 4).
+
+### Step 6: Enhance Voice(SKIP THIS STEP FOR NOW. DIRECTLY USE THE MERGED VIDEO FROM STEP 5 FOR FINALIZATION)
+Call `enhance_voice` with the merged video URL. This is non-critical — if it fails, use the merged video.
+
+### Step 7: Finalize
+Call `upload_and_finalize` with the final video URL.
 
 ## Important Rules
-- The total ad duration must not exceed 15 seconds.
-- Generate at most 2 video clips.
-- ALWAYS verify clips after generation. If a clip fails verification, adjust the visual prompt to better match the script and regenerate.
-- Do NOT try to pass image or video data in your messages. Always work with cloud storage URLs that the tools return.
-- When generating Veo prompts, the exact script text will be preserved for lip-sync. Do not paraphrase the dialogue.
 - After finishing all steps, provide a final summary as JSON in this exact format:
   {"final_video_url": "<url>", "clips_generated": <number>, "total_duration_seconds": <number>}
 
 ## Error Handling
-- If a tool returns an error, analyze it and decide: retry with adjusted parameters, or skip the step if non-critical.
+- If a tool returns an error, analyze it and decide: retry with adjusted parameters. If retries are exhausted, fail the whole process with an error message.
 - Content policy errors from video generation: try adjusting the visual prompt to be less specific about people/faces.
-- Voice enhancement failures: the merged video without enhancement is still usable.
-- If all retries for a clip fail, proceed with whatever clips succeeded."""
+"""
 
 
 def _build_tool_definitions() -> List[Dict[str, Any]]:
-    """Build Anthropic tool definitions for all 6 tools."""
+    """Build Anthropic tool definitions for all 7 tools."""
     return [
         {
             "name": "generate_veo_prompts",
             "description": (
-                "Break an ad script into 1-2 segments and generate optimized Veo 3.1 "
-                "video prompts for each segment. Each prompt describes camera angles, "
-                "character actions, scenery, and movement. The script text is preserved "
-                "exactly as-is for lip-sync — never paraphrased.\n\n"
-                "Returns an array of objects, each with a 'veo_prompt' (visual description "
-                "for Veo) and 'script_segment' (exact dialogue for that clip).\n\n"
-                "Limitations:\n"
-                "- Maximum 2 segments (clips) to keep total ad under 15 seconds\n"
-                "- Each clip will be 6-8 seconds\n"
-                "- Script segments use the EXACT words from the original script\n\n"
-                "Call this first to plan the video clips before generating them."
+                "Calls Gemini text generation to break a script into segments and generate "
+                "a Veo 3.1 video prompt for each segment. Returns {prompts: [{clip_number, "
+                "veo_prompt, script_segment}], total_clips}."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "script": {
                         "type": "string",
-                        "description": "The full ad script (dialogue the character will speak)",
+                        "description": "The complete ad script with all dialogue.",
+                    },
+                    "system_prompt": {
+                        "type": "string",
+                        "description": "System instruction for Gemini controlling how Veo prompts are generated.",
+                    },
+                    "num_segments": {
+                        "type": "integer",
+                        "description": "Number of segments to split the script into.",
                     },
                     "character_name": {
                         "type": "string",
-                        "description": "Name of the character (used in visual descriptions). Defaults to 'character'.",
+                        "description": "Character name used in generated prompts. Defaults to 'character'.",
                     },
                 },
-                "required": ["script"],
+                "required": ["script", "system_prompt", "num_segments"],
+            },
+        },
+        {
+            "name": "generate_scene_image",
+            "description": (
+                "Calls Gemini image generation to create a scene image from a prompt and the "
+                "character reference photo. Saves the result to GCS. Returns {status, "
+                "clip_number, scene_image_gcs_url}."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": "Image generation prompt describing the scene, character pose, camera angle, and lighting.",
+                    },
+                    "clip_number": {
+                        "type": "integer",
+                        "description": "Zero-based clip index this scene image is for.",
+                    },
+                },
+                "required": ["prompt", "clip_number"],
             },
         },
         {
             "name": "generate_video_clip",
             "description": (
-                "Generate a single video clip using Google Veo 3.1 image-to-video. "
-                "The character image is used as the starting frame, and Veo generates "
-                "a video with built-in lip-sync matching the script dialogue.\n\n"
-                "This tool blocks until the video is fully generated and uploaded to "
-                "cloud storage (typically 2-5 minutes per clip). Returns a cloud storage "
-                "URL for the generated clip.\n\n"
-                "IMPORTANT: The tool always uses the original character image for every "
-                "clip. Do NOT try to extract frames from previous clips.\n\n"
-                "Limitations:\n"
-                "- Valid durations: 6 or 8 seconds only\n"
-                "- May fail due to content safety filters — retry with a less specific "
-                "visual prompt if this happens\n"
-                "- Retries internally up to 3 times on timeout\n\n"
-                "Call this once per clip after generating prompts. Pass the veo_prompt "
-                "and script_segment from generate_veo_prompts."
+                "Calls Veo 3.1 image-to-video API to generate multiple video clip variants from a "
+                "scene image with lip-synced dialogue. Saves all variants to GCS. Returns {status, "
+                "clip_number, clip_variant_urls, variants_generated}."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "clip_number": {
                         "type": "integer",
-                        "description": "Zero-based clip index (0 for first clip, 1 for second)",
+                        "description": "Zero-based clip index.",
                     },
                     "veo_prompt": {
                         "type": "string",
-                        "description": "The visual description prompt for Veo (camera angles, actions, scenery)",
+                        "description": "Visual description prompt for Veo (camera angles, actions, scenery).",
                     },
                     "script_segment": {
                         "type": "string",
-                        "description": "The exact dialogue text the character should speak in this clip",
+                        "description": "Exact dialogue text for lip-sync.",
                     },
-                    "duration_seconds": {
-                        "type": "integer",
-                        "enum": [6, 8],
-                        "description": "Clip duration in seconds. Use 8 for most clips.",
+                    "scene_image_gcs_url": {
+                        "type": "string",
+                        "description": "GCS URL of the scene image to use as the starting frame.",
                     },
                 },
-                "required": ["clip_number", "veo_prompt", "script_segment"],
+                "required": ["clip_number", "veo_prompt", "script_segment", "scene_image_gcs_url"],
             },
         },
         {
             "name": "verify_video_clip",
             "description": (
-                "Verify that a generated video clip matches its intended script content "
-                "using Gemini Vision analysis. The tool downloads the clip from its cloud "
-                "storage URL, analyzes it, and returns a verification score.\n\n"
-                "Returns a confidence score (0.0-1.0) and detailed feedback. A score >= 0.6 "
-                "is considered passing.\n\n"
-                "MANDATORY: Call this after EVERY generate_video_clip call. If verification "
-                "fails (score < 0.6), regenerate the clip with an adjusted visual prompt "
-                "(max 2 retries per clip).\n\n"
-                "Example adjustment: If feedback says 'character appears static', add more "
-                "movement and gesture descriptions to the veo_prompt."
+                "Calls Gemini Vision to analyze a video clip and verify it matches the intended "
+                "script and prompt. Returns {clip_number, verified, confidence_score, "
+                "description}."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "clip_number": {
                         "type": "integer",
-                        "description": "Zero-based clip index being verified",
+                        "description": "Zero-based clip index.",
                     },
                     "clip_gcs_url": {
                         "type": "string",
-                        "description": "Cloud storage URL of the video clip to verify",
+                        "description": "GCS URL of the video clip to analyze.",
+                    },
+                    "system_prompt": {
+                        "type": "string",
+                        "description": "System instruction for Gemini Vision controlling how verification is performed.",
                     },
                     "script_segment": {
                         "type": "string",
-                        "description": "The expected dialogue/script text for this clip",
+                        "description": "Expected dialogue for this clip.",
                     },
                     "veo_prompt": {
                         "type": "string",
-                        "description": "The Veo prompt that was used to generate this clip",
+                        "description": "Visual prompt used to generate this clip.",
                     },
                 },
-                "required": ["clip_number", "clip_gcs_url", "script_segment", "veo_prompt"],
+                "required": ["clip_number", "clip_gcs_url", "system_prompt", "script_segment", "veo_prompt"],
             },
         },
         {
             "name": "merge_video_clips",
             "description": (
-                "Merge multiple video clips into a single continuous video using ffmpeg. "
-                "Takes cloud storage URLs of individual clips and produces one merged video.\n\n"
-                "Streams clips directly from cloud storage (no local download of source clips). "
-                "Returns a cloud storage URL for the merged video.\n\n"
-                "For a single clip, this returns the same URL without re-encoding.\n\n"
-                "Limitations:\n"
-                "- All clips must be the same resolution and aspect ratio\n"
-                "- Audio tracks are preserved and concatenated\n"
-                "- Maximum 2 clips supported\n\n"
-                "Call this after all clips have been generated and verified."
+                "Uses ffmpeg to concatenate multiple video clips into a single video. "
+                "Uploads the merged result to GCS. Returns {merged_video_url, "
+                "total_duration_seconds}."
             ),
             "input_schema": {
                 "type": "object",
@@ -212,7 +271,7 @@ def _build_tool_definitions() -> List[Dict[str, Any]]:
                     "clip_gcs_urls": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Ordered list of cloud storage URLs for clips to merge (first clip first)",
+                        "description": "Ordered list of GCS URLs for the clips to merge.",
                     },
                 },
                 "required": ["clip_gcs_urls"],
@@ -221,28 +280,20 @@ def _build_tool_definitions() -> List[Dict[str, Any]]:
         {
             "name": "enhance_voice",
             "description": (
-                "Enhance the voice quality in a merged video using ElevenLabs Voice "
-                "Changer (Speech-to-Speech). Extracts the audio track, applies professional "
-                "voice enhancement, and replaces the original audio.\n\n"
-                "Returns a cloud storage URL for the voice-enhanced video.\n\n"
-                "The default voice is 'Bella'. If no voice_id is provided, the tool "
-                "searches for Bella automatically.\n\n"
-                "Limitations:\n"
-                "- Processing takes 30-60 seconds\n"
-                "- If the voice is not found, returns the original merged video URL unchanged\n"
-                "- Non-critical step: if enhancement fails, the merged video is still usable\n\n"
-                "Call this after merge_video_clips."
+                "Runs the audio track through ElevenLabs Speech-to-Speech voice changer, "
+                "then replaces the original audio. Uploads the result to GCS. Returns "
+                "{enhanced_video_url, voice_used}."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "merged_video_url": {
                         "type": "string",
-                        "description": "Cloud storage URL of the merged video",
+                        "description": "GCS URL of the video whose audio should be enhanced.",
                     },
                     "voice_id": {
                         "type": "string",
-                        "description": "ElevenLabs voice ID to use. If omitted, uses the Bella voice.",
+                        "description": "ElevenLabs voice ID. Defaults to the configured voice if omitted.",
                     },
                 },
                 "required": ["merged_video_url"],
@@ -251,17 +302,15 @@ def _build_tool_definitions() -> List[Dict[str, Any]]:
         {
             "name": "upload_and_finalize",
             "description": (
-                "Finalize the ad creation by creating an asset record in the database. "
-                "The video should already be in cloud storage from previous steps.\n\n"
-                "Returns the final signed URL (valid for 7 days) and the asset ID.\n\n"
-                "Call this as the very last step after voice enhancement is complete."
+                "Creates an asset record in Firestore for the final video. Returns "
+                "{final_video_url, asset_id, status}."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "final_video_url": {
                         "type": "string",
-                        "description": "Cloud storage URL of the final enhanced video",
+                        "description": "GCS URL of the finished video to register.",
                     },
                 },
                 "required": ["final_video_url"],
@@ -302,6 +351,7 @@ class AgenticOrchestrator:
         # Track clips generated/verified for progress calculation
         self._clips_generated = 0
         self._clips_verified = 0
+        self._scene_images_generated = 0
         self._total_clips = 0
 
     async def run(
@@ -428,11 +478,17 @@ class AgenticOrchestrator:
         if tool_name == "generate_veo_prompts" and "total_clips" in result:
             self._total_clips = result["total_clips"]
 
+        if tool_name == "generate_scene_image" and result.get("status") == "completed":
+            self._scene_images_generated += 1
+            # Progress: 10-18% range (after prompts, before video gen)
+            if self._total_clips > 0:
+                base_progress = 10 + int((self._scene_images_generated / self._total_clips) * 8)
+
         if tool_name == "generate_video_clip" and result.get("status") == "completed":
             self._clips_generated += 1
-            # Progress: 20% (prompts done) + clip generation spans 20-55%
+            # Progress: 18-55% range (after scene images)
             if self._total_clips > 0:
-                base_progress = 20 + int((self._clips_generated / self._total_clips) * 35)
+                base_progress = 18 + int((self._clips_generated / self._total_clips) * 37)
 
         if tool_name == "verify_video_clip":
             self._clips_verified += 1
@@ -500,9 +556,9 @@ class AgenticOrchestrator:
 
         parts.extend([
             f"",
-            f"The character image is already uploaded to cloud storage and will be "
-            f"used automatically by the video generation tool. You do not need to "
-            f"handle the image.",
+            f"The character reference image is already uploaded to cloud storage "
+            f"and will be automatically included by the scene image generation tool. "
+            f"You do not need to handle the image directly.",
             f"",
             f"Please proceed with creating the ad.",
         ])

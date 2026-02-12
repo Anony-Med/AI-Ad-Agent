@@ -13,7 +13,7 @@ Usage:
     gemini_key = get_secret("ai_ad_agent_gemini_api_key")
 
     # Get user-specific API key (falls back to global if not found)
-    user_gemini_key = get_user_secret("user123", "gemini")
+    user_gemini_key = get_user_secret("user123", "gemini")  # returns str or None
 """
 
 import os
@@ -91,80 +91,35 @@ def get_secret(secret_id: str, default: Optional[str] = None) -> Optional[str]:
         return default
 
 
-def get_user_secret(
-    user_id: str,
-    provider: str,
-    key_type: str = "api_key",
-    fallback_to_global: bool = True
-) -> Optional[str]:
+def get_user_secret(user_id: str, provider: str) -> Optional[str]:
     """
-    Fetch a user-specific API key from Secret Manager.
+    Fetch an API key from Secret Manager by provider name.
 
-    Naming convention: ai_ad_agent_{user_id}_{provider}_{key_type}
-
-    Fallback chain (if fallback_to_global=True):
-    1. ai_ad_agent_{user_id}_{provider}_{key_type} (user-specific)
-    2. ai_ad_agent_{provider}_{key_type} (global AI ad agent)
-    3. unified_api_{provider}_{key_type} (shared with Unified API)
-    4. Environment variable
+    Uses a direct mapping from provider to the known secret name in Secret Manager.
 
     Args:
-        user_id: User identifier
-        provider: Provider name (gemini, elevenlabs, google, etc.)
-        key_type: Key type (api_key, secret_key)
-        fallback_to_global: If True, fall back to global secret if user secret not found
+        user_id: User identifier (for logging)
+        provider: Provider name (gemini, elevenlabs, anthropic, google, openai)
 
     Returns:
         Secret value or None
-
-    Example:
-        >>> # Try user-specific, fall back to global, then unified API
-        >>> key = get_user_secret("user123", "gemini", "api_key")
-
-        >>> # User-specific only (no fallback)
-        >>> key = get_user_secret("user123", "elevenlabs", "api_key", fallback_to_global=False)
     """
-    # Try user-specific secret first
-    user_secret_id = f"ai_ad_agent_{user_id}_{provider}_{key_type}"
-    secret = get_secret(user_secret_id)
+    from app.config import settings
 
-    if secret:
-        logger.info(f"Using user-specific secret for {user_id}/{provider}")
-        return secret
+    secret_names = {
+        "gemini": settings.SECRET_NAME_GEMINI,
+        "google": settings.SECRET_NAME_GEMINI,
+        "elevenlabs": settings.SECRET_NAME_ELEVENLABS,
+        "anthropic": settings.SECRET_NAME_ANTHROPIC,
+        "openai": settings.SECRET_NAME_OPENAI,
+    }
 
-    # Fall back to global secret if enabled
-    if fallback_to_global:
-        # Try AI Ad Agent global secret
-        global_secret_id = f"ai_ad_agent_{provider}_{key_type}"
-        secret = get_secret(global_secret_id)
+    if provider in secret_names:
+        secret = get_secret(secret_names[provider])
         if secret:
-            logger.info(f"Using AI ad agent global secret for {provider} (user {user_id})")
             return secret
 
-        # Fall back to Unified API secret (for compatibility)
-        unified_secret_id = f"unified_api_{provider}_{key_type}"
-        secret = get_secret(unified_secret_id)
-        if secret:
-            logger.info(f"Using Unified API secret for {provider} (user {user_id})")
-            return secret
-
-        # Try alternate naming patterns (for compatibility with existing secrets)
-        alternate_names = {
-            "elevenlabs": ["eleven-labs-api-key", "unified_api_elevenlabs_api_key"],
-            "google": ["unified_api_google_api_key", "GOOGLE_API_KEY"],
-            "gemini": ["unified_api_google_api_key", "GOOGLE_API_KEY"],
-            "openai": ["unified_api_openai_api_key", "openai-api-key"],
-            "anthropic": ["anthropic-api-key"],
-        }
-
-        if provider in alternate_names:
-            for alternate_secret_id in alternate_names[provider]:
-                secret = get_secret(alternate_secret_id)
-                if secret:
-                    logger.info(f"Using alternate secret '{alternate_secret_id}' for {provider} (user {user_id})")
-                    return secret
-
-    logger.warning(f"No secret found for user {user_id}, provider {provider}, key_type {key_type}")
+    logger.warning(f"No secret found for provider {provider} (user {user_id})")
     return None
 
 
@@ -189,16 +144,18 @@ def get_ai_agent_credentials(user_id: str = "global") -> dict:
     """
     credentials = {}
 
+    from app.config import settings
+
     if user_id == "global":
         # Global startup: fetch from known secret names directly
-        gemini_key = get_secret("unified_api_google_api_key")
-        elevenlabs_key = get_secret("eleven-labs-api-key")
+        gemini_key = get_secret(settings.SECRET_NAME_GEMINI)
+        elevenlabs_key = get_secret(settings.SECRET_NAME_ELEVENLABS)
     else:
         # User-specific: use fallback chain
-        gemini_key = get_user_secret(user_id, "gemini", "api_key", fallback_to_global=True)
+        gemini_key = get_user_secret(user_id, "gemini")
         if not gemini_key:
-            gemini_key = get_user_secret(user_id, "google", "api_key", fallback_to_global=True)
-        elevenlabs_key = get_user_secret(user_id, "elevenlabs", "api_key", fallback_to_global=True)
+            gemini_key = get_user_secret(user_id, "google")
+        elevenlabs_key = get_user_secret(user_id, "elevenlabs")
 
     if gemini_key:
         credentials["GEMINI_API_KEY"] = gemini_key

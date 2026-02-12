@@ -14,6 +14,29 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Default system instruction for the legacy (non-agentic) pipeline.
+# The agentic orchestrator passes its own system_prompt via the tool call.
+DEFAULT_VEO_PROMPT_SYSTEM_INSTRUCTION = """You are an expert video director specialized in creating prompts for Google Veo 3.1.
+
+Create DYNAMIC, ACTION-ORIENTED video ad prompts where a character moves, demonstrates, and shows things related to what they're saying, AND extract corresponding script segments.
+
+REQUIREMENTS:
+- Each segment should be 6-7 seconds of speaking time (15-20 words, 60-80 characters)
+- Create BALANCED segments - avoid very short clips
+- Character must be IN MOTION - walking, gesturing, pointing, demonstrating
+- Actions must RELATE TO the script content
+- Use DYNAMIC camera movements (tracking, panning)
+- Describe camera angles, lighting, character expressions AND movements
+- The avatar MUST speak ONLY the EXACT words from the script - NO paraphrasing
+- Put the EXACT script text in the script_segments array
+- After the script segment ends, the avatar should STOP SPEAKING - just smile, walk, or gesture silently
+- NO text overlays, captions, or on-screen text in prompts
+- NO repeating script words in the visual description
+
+Output format: Return a JSON object with two arrays:
+- "prompts": Array of Veo 3.1 video prompts (visuals and actions ONLY)
+- "script_segments": Array of EXACT script text from the original script"""
+
 
 class GeminiClient:
     """Client for Google Gemini AI via the google-genai SDK (Vertex AI)."""
@@ -40,6 +63,11 @@ class GeminiClient:
             project=settings.GCP_PROJECT_ID,
             location=settings.GEMINI_REGION,
         )
+
+        # Lazy-init client for image generation (may need different region)
+        self._image_client: Optional[genai.Client] = None
+        self._image_model = settings.GEMINI_IMAGE_MODEL
+        self._image_region = settings.GEMINI_IMAGE_REGION
 
         logger.info(f"GeminiClient initialized with google-genai SDK (Vertex AI) "
                      f"project={settings.GCP_PROJECT_ID}, location={settings.GEMINI_REGION}, model={self.model}")
@@ -110,171 +138,20 @@ class GeminiClient:
             logger.error(f"Gemini generate_text failed: {e}")
             raise
 
-    async def generate_veo_prompts(self, script: str, character_name: str = "character") -> List[str]:
-        """
-        Generate Veo 3.1 prompts from a script.
-
-        Args:
-            script: The dialogue script
-            character_name: Name of the character
-
-        Returns:
-            List of Veo prompts (max 7 seconds each)
-        """
-        system_instruction = """You are an expert video director specialized in creating prompts for Google Veo 3.1.
-
-Your task: Create DYNAMIC, ACTION-ORIENTED video ad prompts where a character moves, demonstrates, and shows things related to what they're saying.
-
-CRITICAL REQUIREMENTS:
-● Each Veo 3.1 video can be a maximum of 7 seconds
-● Character must be IN MOTION - walking, gesturing, pointing, demonstrating, interacting with environment
-● Actions must RELATE TO the script content (e.g., if talking about houses, show houses; if talking about features, point to them)
-● The character's lip-sync aligns with the dialogue
-● Use DYNAMIC camera movements (walking with character, panning, tracking shots)
-● Show visual elements that reinforce what's being said
-● Avoid static/stationary poses - character should be actively doing something
-● Describe camera angles, lighting, character expressions AND movements
-● Focus on natural, professional presentation with energy and purpose
-
-Output format: Return ONLY a JSON array of prompt strings, no additional text."""
-
-        prompt = f"""Script:
-"{script}"
-
-Character: {character_name}
-
-Break this script into DYNAMIC Veo 3.1 video prompts. Each clip should be 7 seconds max.
-
-IMPORTANT: Character must be MOVING and SHOWING things related to the script, NOT standing still.
-
-Example format with MOVEMENT:
-[
-  "Medium shot of {character_name} walking toward camera along a suburban street lined with houses, warm afternoon lighting. She gestures toward the houses while speaking energetically: 'Tired of hurricanes and repairs?' Camera tracks alongside her movement. She points at a damaged roof, showing concern.",
-  "Close-up tracking shot of {character_name} walking through a bright, modern home interior. She runs her hand along a pristine countertop while saying: 'We buy houses as-is.' Camera follows her fluid movement through the space. Natural window light.",
-  "{character_name} walks up to a house's front door, camera following from behind, then she turns to face camera with a warm smile: 'No repairs needed.' She gestures broadly at the house behind her. Confident, reassuring energy."
-]
-
-Generate DYNAMIC prompts with movement and actions now:"""
-
-        response = await self.generate_text(
-            prompt=prompt,
-            system_instruction=system_instruction,
-        )
-
-        # Parse JSON from response
-        import re
-
-        json_match = re.search(r'\[.*\]', response, re.DOTALL)
-        if json_match:
-            prompts = json.loads(json_match.group())
-            logger.info(f"Generated {len(prompts)} Veo prompts")
-            return prompts
-        else:
-            # Fallback: split by newlines
-            prompts = [line.strip() for line in response.split('\n') if line.strip() and not line.strip().startswith('#')]
-            logger.warning("Could not parse JSON, using fallback parsing")
-            return prompts
-
     async def generate_veo_prompts_with_segments(
         self,
         script: str,
-        character_name: str = "character"
+        system_instruction: str,
+        num_segments: int,
+        character_name: str = "character",
     ) -> tuple[List[str], List[str]]:
-        """
-        Generate Veo 3.1 prompts AND extract corresponding script segments.
-
-        Args:
-            script: The dialogue script
-            character_name: Name of the character
-
-        Returns:
-            Tuple of (prompts, script_segments) where each prompt has a corresponding segment
-        """
-        system_instruction = """You are an expert video director specialized in creating prompts for Google Veo 3.1.
-
-Your task: Create DYNAMIC, ACTION-ORIENTED video ad prompts where a character moves, demonstrates, and shows things related to what they're saying, AND extract corresponding script segments.
-
-CRITICAL REQUIREMENTS:
-● Each Veo 3.1 video should be 6-7 seconds of speaking time (not too short!)
-● Segment the script into BALANCED chunks of 15-20 words each (60-80 characters)
-● Avoid creating very short 2-3 second segments - combine them to reach 6-7 seconds
-● Character must be IN MOTION - walking, gesturing, pointing, demonstrating, interacting with environment
-● Actions must RELATE TO the script content (e.g., if talking about houses, show houses; if talking about features, point to them)
-● The character's lip-sync aligns with the dialogue
-● Use DYNAMIC camera movements (walking with character, panning, tracking shots)
-● Show visual elements that reinforce what's being said (scenery, setting, environment)
-● Avoid static/stationary poses - character should be actively doing something
-● Describe camera angles, lighting, character expressions AND movements
-
-STRICT SCRIPT ADHERENCE RULES - CRITICAL:
-● The avatar MUST speak ONLY the EXACT words from the script - NO paraphrasing, NO additions
-● Put the EXACT script text in "quotes" in the script_segments array
-● The avatar will lip-sync to these EXACT words - any deviation will cause misalignment
-● Do NOT add filler words, extra dialogue, or modify the script in ANY way
-● If a segment is short, allow SILENCE with visual action only
-● Better to have silence than to add words not in the original script
-● The script text is SACRED - use it verbatim without ANY changes
-
-AFTER SCRIPT FINISHES - CRITICAL:
-● If the avatar finishes speaking the script segment before the video ends, DO NOT SPEAK ANYTHING ELSE
-● NO gibberish, NO additional words, NO mumbling, NO mouth movements that look like speaking
-● Instead: smile, walk, gesture, look at camera, interact with environment - VISUAL ACTIONS ONLY
-● The avatar should continue the scene naturally but SILENTLY after the script is done
-● Example: After saying the line, avatar smiles warmly at camera, or continues walking, or gestures confidently
-● NEVER add dialogue or speaking beyond the exact script segment
-
-FORBIDDEN ELEMENTS:
-● NO text animations, captions, or on-screen text overlays in prompts
-● NO repeating script words in the visual description
-● NO going off-script or adding dialogue
-● NO speaking gibberish or additional words after the script segment ends
-
-Output format: Return a JSON object with two arrays:
-- "prompts": Array of DYNAMIC Veo 3.1 video prompts with movement and actions (describe visuals, scenery, and actions ONLY - quote the EXACT script text separately)
-- "script_segments": Array of EXACT script text from the original script (what's spoken in each clip)
-
-Be precise - use the exact script words without modification."""
-
+        """Gemini text generation: break script into segments with Veo prompts."""
         prompt = f"""Script (USE THESE EXACT WORDS ONLY - VERBATIM):
 "{script}"
 
 Character: {character_name}
-
-Break this script into:
-1. DYNAMIC Veo 3.1 video prompts (describe camera, scenery, setting, ACTION, MOVEMENT - but DO NOT repeat the script words in the description)
-2. Corresponding EXACT script segments - COPY the exact words from the script above, word-for-word
-
-SEGMENT LENGTH REQUIREMENTS:
-● Each clip should be 6-7 seconds of speaking time (approximately 15-20 words or 60-80 characters per segment)
-● Create BALANCED segments - avoid very short clips (2-3 seconds) that leave the avatar with nothing to say
-● Distribute the script text EVENLY across all clips
-● If a natural break creates a short segment, combine it with the previous or next segment to reach 6-7 seconds
-
-CRITICAL RULES - THE AVATAR WILL SPEAK ONLY THESE EXACT WORDS:
-1. Copy the EXACT WORDS from the script into script_segments - character by character, no modifications
-2. The avatar's lip-sync depends on these EXACT words - any change will break synchronization
-3. Put each script segment in "quotes" to ensure exact text is preserved
-4. Split the script naturally across multiple clips (cover ALL the script text)
-5. Character must be MOVING and SHOWING things related to the script
-6. Include rich scenery/environment descriptions in prompts
-7. DO NOT include text overlays, captions, or animations in prompts
-8. DO NOT repeat the script words when describing the visual scene
-9. If a segment is short, allow SILENCE with visual action only
-10. Better to have silence than add words not in the script
-11. NEVER paraphrase, summarize, or reword the script - use it VERBATIM
-12. AFTER SCRIPT ENDS: Avatar should STOP SPEAKING completely - just smile, walk, gesture, or do visual actions ONLY. NO gibberish, NO additional words, NO mouth movements that look like speaking
-
-Return in this JSON format with DYNAMIC prompts:
-{{
-  "prompts": [
-    "Medium shot of {character_name} walking toward camera along a suburban street lined with houses, warm afternoon lighting. She gestures toward the houses. Camera tracks alongside her movement. Natural, engaging energy."
-  ],
-  "script_segments": [
-    "Tired of hurricanes, repairs, or just ready for a change?"
-  ]
-}}
-
-Generate DYNAMIC prompts NOW (remember: scenery descriptions YES, text overlays NO, exact script words only, NO gibberish after script ends):"""
+Number of segments: {num_segments}
+"""
 
         response = await self.generate_text(
             prompt=prompt,
@@ -301,10 +178,15 @@ Generate DYNAMIC prompts NOW (remember: scenery descriptions YES, text overlays 
             prompts = data.get("prompts", [])
             segments = data.get("script_segments", [])
 
-            # Ensure equal lengths
-            min_len = min(len(prompts), len(segments))
-            prompts = prompts[:min_len]
-            segments = segments[:min_len]
+            if len(prompts) != len(segments):
+                raise RuntimeError(
+                    f"Gemini returned {len(prompts)} prompts but {len(segments)} script_segments — arrays must match"
+                )
+
+            if len(prompts) != num_segments:
+                raise RuntimeError(
+                    f"Requested {num_segments} segments but Gemini returned {len(prompts)}"
+                )
 
             # Save parsed results to GCS
             await self._save_to_gcs("gemini_parsed_prompts.json", {
@@ -317,99 +199,17 @@ Generate DYNAMIC prompts NOW (remember: scenery descriptions YES, text overlays 
             logger.info(f"Generated {len(prompts)} prompts with script segments")
             return prompts, segments
         else:
-            # Fallback: use simple method and split script evenly
-            logger.warning("Could not parse JSON with segments, using fallback")
-            prompts = await self.generate_veo_prompts(script, character_name)
-
-            # Split script into equal segments
-            words = script.split()
-            words_per_segment = max(1, len(words) // len(prompts))
-
-            segments = []
-            for i in range(len(prompts)):
-                start = i * words_per_segment
-                end = start + words_per_segment if i < len(prompts) - 1 else len(words)
-                segment = " ".join(words[start:end])
-                segments.append(segment)
-
-            return prompts, segments
-
-    async def get_creative_suggestions(self, video_description: str) -> Dict[str, Any]:
-        """
-        Get creative enhancement suggestions for a video.
-
-        Args:
-            video_description: Description of the merged video
-
-        Returns:
-            Dict with suggestions for animations, text overlays, GIFs, effects
-        """
-        system_instruction = """You are a creative video editor expert specializing in social media ads.
-Provide specific, actionable suggestions for enhancing videos.
-
-Output format: Return ONLY a JSON object with these keys:
-- animations: List of animation ideas
-- text_overlays: List of text overlay suggestions
-- gifs: List of GIF/emoji placement ideas
-- effects: List of video effects to apply
-- general_feedback: Brief overall feedback
-
-Be specific and concise."""
-
-        prompt = f"""Video description:
-{video_description}
-
-What animations, GIFs, text overlays, and effects would make this video more engaging?
-Focus on:
-- Highlighting key messages
-- Adding visual interest
-- Maintaining professional quality
-- Suitable for ad campaigns
-
-Provide suggestions in JSON format:"""
-
-        response = await self.generate_text(
-            prompt=prompt,
-            system_instruction=system_instruction,
-            temperature=settings.GEMINI_TEMPERATURE_CREATIVE,
-            max_tokens=settings.GEMINI_MAX_TOKENS_COMPACT,
-        )
-
-        # Parse JSON
-        import re
-
-        json_match = re.search(r'\{.*\}', response, re.DOTALL)
-        if json_match:
-            suggestions = json.loads(json_match.group())
-            logger.info("Generated creative suggestions")
-            return suggestions
-        else:
-            logger.warning("Could not parse creative suggestions JSON")
-            return {
-                "animations": [],
-                "text_overlays": [],
-                "gifs": [],
-                "effects": [],
-                "general_feedback": response,
-            }
+            raise RuntimeError(f"Gemini returned unparseable response: {response[:200]}")
 
     async def analyze_video_content(
         self,
         video_url: str,
+        system_instruction: str,
         script_segment: str,
         prompt: str,
+        clip_label: str = "clip",
     ) -> Dict[str, Any]:
-        """
-        Analyze video content using Gemini Vision via google-genai SDK.
-
-        Args:
-            video_url: URL of the video to analyze
-            script_segment: The script text this clip should represent
-            prompt: The Veo prompt used to generate this clip
-
-        Returns:
-            Dict with verification results
-        """
+        """Gemini Vision: analyze a video clip against script and prompt."""
         import tempfile
 
         # Download the video
@@ -432,17 +232,7 @@ Provide suggestions in JSON format:"""
             if os.path.exists(video_path):
                 os.remove(video_path)
 
-        system_instruction = """You are a video content analyzer. Analyze the provided video and verify if it matches the intended script and prompt.
-
-Provide a detailed analysis in JSON format with:
-1. visual_description: Describe what you see in the video (scene, character actions, expressions, setting)
-2. matches_script: Boolean - does the visual content align with the script segment?
-3. confidence_score: Float 0.0-1.0 indicating alignment confidence
-4. alignment_feedback: Detailed explanation of how well it matches or what's missing
-
-Be objective and specific in your analysis."""
-
-        analysis_prompt = f"""Analyze this video clip and verify it matches the intended content.
+        analysis_prompt = f"""Analyze this video clip. Listen to the spoken dialogue AND evaluate the visuals.
 
 **Expected Script Segment:**
 "{script_segment}"
@@ -450,19 +240,7 @@ Be objective and specific in your analysis."""
 **Veo Prompt Used:**
 "{prompt}"
 
-**Your Task:**
-1. Describe what you see in the video
-2. Check if the visual content matches the script segment
-3. Provide a confidence score (0.0 = no match, 1.0 = perfect match)
-4. Explain alignment or misalignment
-
-Return your analysis in this JSON format:
-{{
-  "visual_description": "what you see in the video",
-  "matches_script": true/false,
-  "confidence_score": 0.85,
-  "alignment_feedback": "detailed explanation"
-}}"""
+Return your analysis as JSON with keys: confidence_score, description."""
 
         try:
             config = types.GenerateContentConfig(
@@ -492,16 +270,157 @@ Return your analysis in this JSON format:
             if json_match:
                 analysis = json.loads(json_match.group())
                 logger.info(f"Video analysis complete: confidence={analysis.get('confidence_score', 0)}")
+
+                await self._save_to_gcs(f"clip_verification_{clip_label}.json", {
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "model": self.model,
+                    "video_url": video_url[:200],
+                    "system_instruction": system_instruction,
+                    "script_segment": script_segment,
+                    "veo_prompt": prompt,
+                    "raw_response": text,
+                    "parsed_analysis": analysis,
+                })
+
                 return analysis
             else:
                 logger.warning("Could not parse video analysis JSON")
+
+                await self._save_to_gcs(f"clip_verification_{clip_label}.json", {
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "model": self.model,
+                    "video_url": video_url[:200],
+                    "script_segment": script_segment,
+                    "raw_response": text,
+                    "parse_error": True,
+                })
+
                 return {
-                    "visual_description": text,
-                    "matches_script": False,
                     "confidence_score": 0.0,
-                    "alignment_feedback": "Failed to parse analysis response"
+                    "description": f"Failed to parse analysis response. Raw: {text[:300]}",
                 }
 
         except Exception as e:
             logger.error(f"Video analysis failed: {e}")
             raise
+
+    def _get_image_client(self) -> genai.Client:
+        """Get or create a genai client for image generation.
+
+        Image generation models may require a different region than text models.
+        Lazily creates a separate client instance if needed.
+        """
+        if self._image_client is None:
+            if self._image_region == settings.GEMINI_REGION:
+                self._image_client = self.client
+            else:
+                self._image_client = genai.Client(
+                    vertexai=True,
+                    project=settings.GCP_PROJECT_ID,
+                    location=self._image_region,
+                )
+                logger.info(
+                    f"Initialized image generation client "
+                    f"(region={self._image_region}, model={self._image_model})"
+                )
+        return self._image_client
+
+    async def generate_scene_image(
+        self,
+        prompt: str,
+        character_image_b64: str,
+        aspect_ratio: str = "16:9",
+    ) -> bytes:
+        """
+        Generate a scene image using Gemini's image generation model.
+
+        The prompt is passed directly to the model alongside the character
+        reference image. The caller (orchestrator) is responsible for crafting
+        an appropriate prompt.
+
+        Args:
+            prompt: The image generation prompt (crafted by the orchestrator)
+            character_image_b64: Base64-encoded character reference image
+            aspect_ratio: Desired aspect ratio (e.g., "16:9", "9:16")
+
+        Returns:
+            Generated image as raw bytes (PNG)
+
+        Raises:
+            RuntimeError: If image generation fails or no image is returned
+        """
+        import base64
+
+        image_client = self._get_image_client()
+
+        character_bytes = base64.b64decode(character_image_b64)
+
+        image_aspect = aspect_ratio or settings.VEO_DEFAULT_ASPECT_RATIO
+
+        safety_settings = [
+            types.SafetySetting(category="HARM_CATEGORY_HATE_SPEECH", threshold="OFF"),
+            types.SafetySetting(category="HARM_CATEGORY_DANGEROUS_CONTENT", threshold="OFF"),
+            types.SafetySetting(category="HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold="OFF"),
+            types.SafetySetting(category="HARM_CATEGORY_HARASSMENT", threshold="OFF"),
+        ]
+
+        config = types.GenerateContentConfig(
+            temperature=settings.GEMINI_IMAGE_TEMPERATURE,
+            top_p=settings.GEMINI_IMAGE_TOP_P,
+            max_output_tokens=settings.GEMINI_IMAGE_MAX_TOKENS,
+            response_modalities=["TEXT", "IMAGE"],
+            safety_settings=safety_settings,
+            image_config=types.ImageConfig(
+                aspect_ratio=image_aspect,
+                image_size=settings.GEMINI_IMAGE_SIZE,
+                output_mime_type=settings.GEMINI_IMAGE_OUTPUT_MIME,
+            ),
+        )
+
+        contents = types.Content(
+            role="user",
+            parts=[
+                types.Part.from_bytes(data=character_bytes, mime_type="image/jpeg"),
+                types.Part.from_text(text=prompt),
+            ],
+        )
+
+        try:
+            response = await image_client.aio.models.generate_content(
+                model=self._image_model,
+                contents=contents,
+                config=config,
+            )
+
+            for part in response.candidates[0].content.parts:
+                if hasattr(part, "inline_data") and part.inline_data:
+                    image_bytes = part.inline_data.data
+                    logger.info(
+                        f"Scene image generated: {len(image_bytes)} bytes "
+                        f"(model={self._image_model})"
+                    )
+
+                    await self._save_to_gcs("scene_image_generation.json", {
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "model": self._image_model,
+                        "prompt": prompt[:500],
+                        "aspect_ratio": image_aspect,
+                        "image_size_bytes": len(image_bytes),
+                    })
+
+                    return image_bytes
+
+            response_text = ""
+            for part in response.candidates[0].content.parts:
+                if hasattr(part, "text") and part.text:
+                    response_text += part.text
+
+            raise RuntimeError(
+                f"Gemini returned no image. Text response: {response_text[:200]}"
+            )
+
+        except RuntimeError:
+            raise
+        except Exception as e:
+            logger.error(f"Scene image generation failed: {e}", exc_info=True)
+            raise RuntimeError(f"Scene image generation failed: {e}")

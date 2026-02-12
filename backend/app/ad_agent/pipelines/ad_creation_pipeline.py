@@ -7,7 +7,6 @@ from typing import Optional, List
 from app.ad_agent.interfaces.ad_schemas import AdRequest, AdJob, AdJobStatus, VideoClip
 from app.ad_agent.agents.prompt_generator import PromptGeneratorAgent
 from app.ad_agent.agents.video_generator import VideoGeneratorAgent
-from app.ad_agent.agents.creative_advisor import CreativeAdvisorAgent
 from app.ad_agent.agents.audio_compositor import AudioCompositorAgent
 from app.ad_agent.agents.video_compositor import VideoCompositorAgent
 from app.ad_agent.agents.clip_verifier import ClipVerifierAgent
@@ -65,7 +64,6 @@ class AdCreationPipeline:
 
         self.prompt_agent = PromptGeneratorAgent(api_key=gemini_api_key)
         self.video_agent = VideoGeneratorAgent()
-        self.creative_agent = CreativeAdvisorAgent(api_key=gemini_api_key)
         self.audio_agent = AudioCompositorAgent(api_key=elevenlabs_api_key)
         self.video_compositor = VideoCompositorAgent()
         self.clip_verifier = ClipVerifierAgent(
@@ -388,6 +386,7 @@ class AdCreationPipeline:
                 raw_b64 = request.character_image
                 if "," in raw_b64:
                     raw_b64 = raw_b64.split(",")[1]
+                character_image_b64 = raw_b64
 
                 image_data = base64.b64decode(raw_b64)
                 import tempfile
@@ -423,6 +422,13 @@ class AdCreationPipeline:
 
         try:
             # Build tool context with all agent instances
+            from app.ad_agent.clients.gemini_client import GeminiClient
+            gemini_client = GeminiClient(
+                storage_client=self.storage,
+                job_id=job_id,
+                user_id=user_id,
+            )
+
             tool_ctx = ToolContext(
                 job_id=job_id,
                 user_id=user_id,
@@ -439,6 +445,7 @@ class AdCreationPipeline:
                 audio_agent=self.audio_agent,
                 video_compositor=self.video_compositor,
                 storage=self.storage,
+                gemini_client=gemini_client,
             )
 
             # Create and run orchestrator
@@ -516,10 +523,12 @@ class AdCreationPipeline:
         })
 
         # Generate prompts with script segments
+        from app.ad_agent.clients.gemini_client import DEFAULT_VEO_PROMPT_SYSTEM_INSTRUCTION
         prompts, segments = await self.prompt_agent.generate_prompts_with_segments(
             script=request.script,
+            system_prompt=DEFAULT_VEO_PROMPT_SYSTEM_INSTRUCTION,
+            num_segments=settings.MAX_CLIPS_PER_AD,
             character_name=request.character_name or "character",
-            max_clip_duration=7,
         )
 
         # Store segments for later use

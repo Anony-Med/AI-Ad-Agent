@@ -54,15 +54,15 @@ def get_pipeline(
     from app.secrets import get_user_secret
 
     # Get user-specific API keys (falls back to global if not found)
-    gemini_key = get_user_secret(user_id, "gemini", "api_key")
+    gemini_key = get_user_secret(user_id, "gemini")
     if not gemini_key:
         # Try "google" as provider name (compatible with unified API)
-        gemini_key = get_user_secret(user_id, "google", "api_key")
+        gemini_key = get_user_secret(user_id, "google")
 
-    elevenlabs_key = get_user_secret(user_id, "elevenlabs", "api_key")
+    elevenlabs_key = get_user_secret(user_id, "elevenlabs")
 
     # Anthropic API key (for agentic orchestrator)
-    anthropic_key = get_user_secret(user_id, "anthropic", "api_key")
+    anthropic_key = get_user_secret(user_id, "anthropic")
     if not anthropic_key:
         anthropic_key = os.getenv("ANTHROPIC_API_KEY")
         if anthropic_key:
@@ -278,12 +278,16 @@ async def test_prompt_generation(
     """
     try:
         from app.ad_agent.agents.prompt_generator import PromptGeneratorAgent
+        from app.ad_agent.clients.gemini_client import DEFAULT_VEO_PROMPT_SYSTEM_INSTRUCTION
+        from app.config import settings
 
         gemini_key = os.getenv("GOOGLE_AI_API_KEY") or os.getenv("GEMINI_API_KEY")
         agent = PromptGeneratorAgent(api_key=gemini_key)
 
-        prompts = await agent.generate_prompts(
+        prompts, segments = await agent.generate_prompts_with_segments(
             script=script,
+            system_prompt=DEFAULT_VEO_PROMPT_SYSTEM_INSTRUCTION,
+            num_segments=settings.MAX_CLIPS_PER_AD,
             character_name=character_name,
         )
 
@@ -291,6 +295,7 @@ async def test_prompt_generation(
             "script": script,
             "character_name": character_name,
             "prompts": prompts,
+            "script_segments": segments,
             "total_clips": len(prompts),
             "estimated_duration": len(prompts) * 7,
         }

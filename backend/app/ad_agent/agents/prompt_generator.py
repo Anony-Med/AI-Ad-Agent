@@ -51,71 +51,22 @@ class PromptGeneratorAgent:
         logger.debug(f"Normalized script: {script[:100]}...")
         return script
 
-    async def generate_prompts(
-        self,
-        script: str,
-        character_name: str = "character",
-        max_clip_duration: int = 7,
-    ) -> List[str]:
-        """
-        Generate Veo 3.1 video prompts from script.
-
-        Args:
-            script: The dialogue script
-            character_name: Name of the character
-            max_clip_duration: Max duration per clip (seconds)
-
-        Returns:
-            List of optimized Veo prompts
-        """
-        logger.info(f"Generating Veo prompts for script ({len(script)} characters)")
-
-        prompts = await self.gemini.generate_veo_prompts(
-            script=script,
-            character_name=character_name,
-        )
-
-        # Validate and clean prompts
-        valid_prompts = []
-        for i, prompt in enumerate(prompts):
-            if prompt and len(prompt.strip()) > 10:
-                valid_prompts.append(prompt.strip())
-                logger.info(f"Clip {i+1}: {len(prompt)} characters")
-            else:
-                logger.warning(f"Skipping invalid prompt at index {i}")
-
-        if not valid_prompts:
-            raise ValueError("No valid prompts generated from script")
-
-        logger.info(f"Generated {len(valid_prompts)} valid Veo prompts")
-        return valid_prompts
-
     async def generate_prompts_with_segments(
         self,
         script: str,
+        system_prompt: str,
+        num_segments: int,
         character_name: str = "character",
-        max_clip_duration: int = 7,
     ) -> Tuple[List[str], List[str]]:
-        """
-        Generate Veo 3.1 video prompts AND corresponding script segments.
-
-        This is used for clip verification - we need to know which part of the
-        script each clip should represent.
-
-        Args:
-            script: The dialogue script
-            character_name: Name of the character
-            max_clip_duration: Max duration per clip (seconds)
-
-        Returns:
-            Tuple of (prompts, script_segments)
-        """
+        """Gemini text generation: break script into segments with Veo prompts."""
         # Normalize script to remove special characters that cause gibberish speech
         script = self.normalize_script(script)
-        logger.info(f"Generating Veo prompts with script segments ({len(script)} characters)")
+        logger.info(f"Generating Veo prompts with script segments ({len(script)} characters, {num_segments} segments)")
 
         prompts, segments = await self.gemini.generate_veo_prompts_with_segments(
             script=script,
+            system_instruction=system_prompt,
+            num_segments=num_segments,
             character_name=character_name,
         )
 

@@ -33,6 +33,10 @@ class Settings(BaseSettings):
 
     # Secret names in Secret Manager (not the actual values!)
     SECRET_MANAGER_SECRET_KEY_NAME: str = "ai-ad-agent-jwt-secret-key"
+    SECRET_NAME_GEMINI: str = "unified_api_google_api_key"
+    SECRET_NAME_ELEVENLABS: str = "eleven-labs-api-key"
+    SECRET_NAME_ANTHROPIC: str = "ai_ad_agent_anthropic_api_key"
+    SECRET_NAME_OPENAI: str = "unified_api_openai_api_key"
 
     # JWT Authentication
     JWT_SECRET_KEY: str = "change-me-in-production"  # Override via env or Secret Manager
@@ -58,6 +62,8 @@ class Settings(BaseSettings):
     ELEVENLABS_STS_MODEL: str = "eleven_english_sts_v2"  # Speech-to-Speech
     ANTHROPIC_MODEL: str = "claude-sonnet-4-5-20250929"
     ANTHROPIC_MAX_TOKENS: int = 4096
+    GEMINI_IMAGE_MODEL: str = "gemini-3-pro-image-preview"
+    GEMINI_IMAGE_REGION: str = "global"  # Gemini 3 Pro Image requires 'global' location
 
     # ──────────────────────────────────────────────
     # Voice Defaults
@@ -91,7 +97,7 @@ class Settings(BaseSettings):
     VEO_DEFAULT_RESOLUTION: str = "720p"
     VEO_PERSON_GENERATION: str = "allow_all"
     VEO_ADD_WATERMARK: bool = True
-    VEO_SAMPLE_COUNT: int = 1
+    VEO_SAMPLE_COUNT: int = 4
     DEFAULT_CLIP_DURATION: int = 7
     MAX_CLIP_DURATION: int = 8
     MAX_CLIPS_PER_AD: int = 2
@@ -132,6 +138,15 @@ class Settings(BaseSettings):
     GEMINI_MAX_TOKENS_COMPACT: int = 1024
     GEMINI_VISION_TEMPERATURE: float = 0.3
     GEMINI_VISION_MAX_TOKENS: int = 1024
+
+    # ──────────────────────────────────────────────
+    # Gemini Image Generation
+    # ──────────────────────────────────────────────
+    GEMINI_IMAGE_TEMPERATURE: float = 1.0
+    GEMINI_IMAGE_TOP_P: float = 0.95
+    GEMINI_IMAGE_MAX_TOKENS: int = 32768
+    GEMINI_IMAGE_SIZE: str = "1K"
+    GEMINI_IMAGE_OUTPUT_MIME: str = "image/png"
 
     # ──────────────────────────────────────────────
     # Clip Verification

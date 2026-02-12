@@ -13,9 +13,9 @@ async def test_stream_ad():
     AVATAR_PATH = r"/Users/ar2427/Downloads/WhatsApp Image 2026-01-13 at 12.56.03.jpeg"
 
     # Script for the ad
-    script = """I Was Done Stressing Over Repairs. 
-
-Stop worrying. Get your free offer at shebuyshousescash.com or call 1-888-SHE-BUYS."""
+    script = """My fixer-upper was too much work. She Buys Houses gave a fair cash offer, 'as-is.' We closed fast. 
+    
+    Stop worrying. Get your free offer at shebuyshousescash.com or call 1-888-SHE-BUYS"""
 
     print("=" * 80)
     print("🎬 AI Ad Agent - Streaming Endpoint Test")
