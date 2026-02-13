@@ -44,7 +44,7 @@ class VideoClip(BaseModel):
     audio_segment_path: Optional[str] = None  # Path to audio segment for this clip
     target_duration: float = 7.0  # Target duration from audio analysis
     veo_job_id: Optional[str] = None
-    video_url: Optional[str] = None  # Unified API video URL (legacy)
+    video_url: Optional[str] = None
     video_b64: Optional[str] = None  # Base64 encoded video from Direct Veo API
     gcs_url: Optional[str] = None  # Our GCS bucket URL (for checkpoint/resume)
     duration: float = 7.0  # Actual duration (may differ from target)

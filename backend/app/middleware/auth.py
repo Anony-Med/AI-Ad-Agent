@@ -46,8 +46,11 @@ async def get_current_user(
             detail="Invalid or expired token",
         )
 
+    name = payload.get("name", "")
     return UserInfo(
         user_id=payload["user_id"],
         email=payload.get("email", ""),
-        name=payload.get("name"),
+        username=name,
+        name=name,
+        full_name=name,
     )

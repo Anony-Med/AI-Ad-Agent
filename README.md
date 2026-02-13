@@ -25,7 +25,7 @@ Submit a script and character image → Get a complete, polished video ad with n
 ## 📊 Tech Stack
 
 - **Backend:** Python FastAPI
-- **Authentication:** Unified API (JWT tokens)
+- **Authentication:** JWT tokens
 - **Database:** Google Cloud Firestore
 - **Storage:** Google Cloud Storage + Secret Manager
 - **Video Generation:** Veo 3.1 **Direct API** (image-to-video with lip-sync) 🆕
@@ -77,7 +77,7 @@ gcloud config set project sound-invention-432122-m5
 
 #### Configure API Keys in Secret Manager
 
-All API keys are stored in GCP Secret Manager (shared with Unified API infrastructure):
+All API keys are stored in GCP Secret Manager:
 
 ```bash
 # 1. Gemini API Key (for prompts, suggestions, verification)
@@ -89,22 +89,12 @@ echo -n "YOUR_ELEVENLABS_KEY" | gcloud secrets create eleven-labs-api-key \
   --project=sound-invention-432122-m5 --replication-policy="automatic" --data-file=-
 
 # 3. GCS Service Account (for signed URLs)
-# This should already exist from Unified API setup
-# If not, see SETUP_COMPLETE.md
-
-# 4. Unified API Credentials (for Veo video generation)
-# Add your Unified API login credentials
-echo -n "your-email@example.com" | gcloud secrets create ai_ad_agent_unified_api_email \
-  --project=sound-invention-432122-m5 --replication-policy="automatic" --data-file=-
-
-echo -n "your-password" | gcloud secrets create ai_ad_agent_unified_api_password \
-  --project=sound-invention-432122-m5 --replication-policy="automatic" --data-file=-
+# See SETUP_COMPLETE.md if not already configured
 ```
 
 **Get API Keys:**
 - **Gemini:** https://aistudio.google.com/app/apikey
 - **ElevenLabs:** https://elevenlabs.io/ → Profile → API Keys
-- **Unified API:** Use your existing Unified API account credentials
 
 **Alternative:** You can also use the quick setup script:
 ```bash
@@ -120,9 +110,6 @@ Create `backend/.env`:
 GCP_PROJECT_ID=sound-invention-432122-m5
 FIRESTORE_DATABASE=ai-ad-agent
 GCS_BUCKET_NAME=ai-ad-agent-videos
-
-# Unified API
-UNIFIED_API_BASE_URL=https://unified-api-interface-994684344365.europe-west1.run.app
 
 # Secret Manager (recommended for production)
 USE_SECRET_MANAGER=true
@@ -165,7 +152,7 @@ curl http://localhost:8000/api/ad-agent/health
 #   "status": "healthy",
 #   "gemini_configured": true,
 #   "elevenlabs_configured": true,
-#   "unified_api_url": "https://unified-api-interface-994684344365.europe-west1.run.app"
+#   "veo_configured": true
 # }
 ```
 
@@ -417,9 +404,6 @@ python tests/create_test_ad.py
 # Monitor ad creation progress
 python tests/monitor_progress.py
 
-# Setup Unified API authentication
-python tests/setup_unified_api_auth.py
-
 # Install ffmpeg (Windows)
 python tests/install_ffmpeg.py
 
@@ -446,8 +430,6 @@ python tests/create_service_account.py
 
 - **[docs/SECRET_MANAGER_SETUP.md](./docs/SECRET_MANAGER_SETUP.md)** - Secret Manager setup guide
 - **[docs/AUTH_AND_SECRETS_FLOW.md](./docs/AUTH_AND_SECRETS_FLOW.md)** - Authentication & secrets flow
-- **[docs/UNIFIED_API_INTEGRATION.md](./docs/UNIFIED_API_INTEGRATION.md)** - Unified API integration details
-
 ### Feature Documentation
 
 - **[docs/AUDIO_FIRST_WORKFLOW.md](./docs/AUDIO_FIRST_WORKFLOW.md)** - Audio-first workflow details 🆕
@@ -500,8 +482,7 @@ ai-ad-agent/
 │   │   │   ├── firestore_db.py     # Uses ADC (no explicit keys)
 │   │   │   └── gcs_storage.py      # GCS checkpoint/resume 🆕
 │   │   ├── services/                # External services
-│   │   │   ├── unified_api_client.py      # Unified API client
-│   │   │   └── veo_client.py              # Direct Veo API client 🆕
+│   │   │   └── veo_client.py              # Direct Veo API client
 │   │   ├── middleware/              # Auth middleware
 │   │   ├── models/                  # Schemas & enums
 │   │   ├── secrets.py               # Secret Manager
@@ -521,7 +502,6 @@ ai-ad-agent/
 ├── tests/                           # Testing scripts 📁
 │   ├── create_test_ad.py           # Create test ad
 │   ├── monitor_progress.py         # Monitor job progress
-│   ├── setup_unified_api_auth.py   # Setup Unified API auth
 │   ├── install_ffmpeg.py           # Install ffmpeg (Windows)
 │   ├── create_service_account.py   # Create GCS service account
 │   └── test_setup.py               # Backend setup tests
@@ -554,7 +534,7 @@ ai-ad-agent/
 - `POST /api/ad-agent/test/prompts` - Test prompt generation
 - `GET /api/ad-agent/health` - Health check
 
-### Authentication (Unified API)
+### Authentication
 
 - `POST /api/auth/register` - Register new user
 - `POST /api/auth/login` - Login (get JWT token)
@@ -568,9 +548,9 @@ ai-ad-agent/
 
 ### Other Endpoints
 
-- `POST /api/generate/video` - Generate single video (Veo, Sora, Kling)
 - `GET /api/assets` - List generated assets
 - `GET /api/billing/usage` - Usage statistics
+- `GET /api/history` - Generation history
 
 ## 📈 Timeline
 
@@ -768,7 +748,6 @@ Contributions welcome! Please:
 
 **Built with:**
 - ViMax-inspired multi-agent architecture
-- Unified API for seamless video generation & authentication
 - GCP Secret Manager for secure key storage
 - Gemini Vision for clip verification
 - FastAPI for modern, async API design

@@ -1,10 +1,8 @@
 """
-Secret Manager Integration (Unified API Pattern)
+Secret Manager Integration
 
 This module provides utilities for fetching API keys from GCP Secret Manager.
 It supports both global secrets (ai_ad_agent_*) and user-specific secrets (ai_ad_agent_{user_id}_*).
-
-Pattern from Unified API for consistency across projects.
 
 Usage:
     from app.secrets import get_secret, get_user_secret
@@ -111,7 +109,6 @@ def get_user_secret(user_id: str, provider: str) -> Optional[str]:
         "google": settings.SECRET_NAME_GEMINI,
         "elevenlabs": settings.SECRET_NAME_ELEVENLABS,
         "anthropic": settings.SECRET_NAME_ANTHROPIC,
-        "openai": settings.SECRET_NAME_OPENAI,
     }
 
     if provider in secret_names:

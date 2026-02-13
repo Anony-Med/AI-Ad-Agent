@@ -33,7 +33,7 @@ class StreamAdRequest(BaseModel):
 
 
 # Initialize pipeline (will be created per request to support different settings and user keys)
-def get_pipeline(
+async def get_pipeline(
     user_id: str,
     enable_verification: bool = True,
     verification_threshold: Optional[float] = None,
@@ -41,7 +41,7 @@ def get_pipeline(
     """
     Get pipeline instance with API keys from Secret Manager.
 
-    Follows Unified API pattern: tries user-specific secrets first, then falls back to global.
+    Tries user-specific secrets first, then falls back to global.
 
     Args:
         user_id: User identifier for fetching user-specific API keys
@@ -53,16 +53,15 @@ def get_pipeline(
     """
     from app.secrets import get_user_secret
 
-    # Get user-specific API keys (falls back to global if not found)
-    gemini_key = get_user_secret(user_id, "gemini")
+    # Use asyncio.to_thread to avoid blocking the event loop with synchronous gRPC calls
+    gemini_key = await asyncio.to_thread(get_user_secret, user_id, "gemini")
     if not gemini_key:
-        # Try "google" as provider name (compatible with unified API)
-        gemini_key = get_user_secret(user_id, "google")
+        gemini_key = await asyncio.to_thread(get_user_secret, user_id, "google")
 
-    elevenlabs_key = get_user_secret(user_id, "elevenlabs")
+    elevenlabs_key = await asyncio.to_thread(get_user_secret, user_id, "elevenlabs")
 
     # Anthropic API key (for agentic orchestrator)
-    anthropic_key = get_user_secret(user_id, "anthropic")
+    anthropic_key = await asyncio.to_thread(get_user_secret, user_id, "anthropic")
     if not anthropic_key:
         anthropic_key = os.getenv("ANTHROPIC_API_KEY")
         if anthropic_key:
@@ -128,7 +127,7 @@ async def create_ad(
             logger.warning(f"Skipping campaign validation (Firestore not available): {e}")
 
         # Create pipeline with user-specific API keys and verification settings
-        pipeline = get_pipeline(
+        pipeline = await get_pipeline(
             user_id=user_id,
             enable_verification=request.enable_verification,
             verification_threshold=request.verification_threshold,
@@ -188,7 +187,7 @@ async def get_ad_job_status(
     Returns progress, current step, and final video URL when complete.
     """
     try:
-        pipeline = get_pipeline(user_id=user_id)
+        pipeline = await get_pipeline(user_id=user_id)
         job = await pipeline.get_job_status(job_id, user_id)
 
         if not job:
@@ -231,7 +230,7 @@ async def download_ad_video(
     try:
         from fastapi.responses import RedirectResponse
 
-        pipeline = get_pipeline(user_id=user_id)
+        pipeline = await get_pipeline(user_id=user_id)
         job = await pipeline.get_job_status(job_id, user_id)
 
         if not job:
@@ -320,10 +319,12 @@ async def ad_agent_health():
     anthropic_key = os.getenv("ANTHROPIC_API_KEY")
 
     # Also check Secret Manager for Anthropic key
+    # Use asyncio.to_thread to avoid blocking the event loop with synchronous gRPC
     if not anthropic_key:
         try:
+            import asyncio
             from app.secrets import get_secret
-            anthropic_key = get_secret("ai_ad_agent_anthropic_api_key")
+            anthropic_key = await asyncio.to_thread(get_secret, "ai_ad_agent_anthropic_api_key")
         except Exception:
             pass
 
@@ -397,7 +398,7 @@ async def create_ad_stream(
                 await progress_queue.put({"event": event, "data": data})
 
             # Create pipeline with progress callback
-            pipeline = get_pipeline(user_id=user_id)
+            pipeline = await get_pipeline(user_id=user_id)
             pipeline.progress_callback = progress_callback
 
             # Start ad creation in background — use agentic if available
@@ -567,7 +568,7 @@ async def create_ad_stream_with_upload(
                 await progress_queue.put({"event": event, "data": data})
 
             # Create pipeline with progress callback
-            pipeline = get_pipeline(user_id=user_id)
+            pipeline = await get_pipeline(user_id=user_id)
             pipeline.progress_callback = progress_callback
 
             # Start ad creation in background — use agentic if available

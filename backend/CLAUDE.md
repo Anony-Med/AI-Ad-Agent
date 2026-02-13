@@ -14,7 +14,7 @@ AI Ad Agent is an automated AI-powered video ad creation system that transforms 
 - Database: Google Cloud Firestore
 - Storage: Google Cloud Storage (GCS) + Secret Manager
 - Video Processing: ffmpeg
-- Authentication: JWT tokens (Unified API pattern)
+- Authentication: JWT tokens
 
 ## Core Development Commands
 
@@ -93,7 +93,6 @@ backend/app/
 │       ├── video_utils.py       # Frame extraction, merging
 │       └── audio_utils.py       # Audio analysis
 ├── services/                    # External service clients
-│   ├── unified_api_client.py    # Unified API client
 │   └── veo_client.py            # Direct Veo API client
 ├── database/                    # Data persistence
 │   ├── firestore_db.py          # Firestore operations
@@ -116,7 +115,7 @@ backend/app/
 - Can resume from any failed step (important for timeout recovery)
 - See `_save_checkpoint()`, `_load_checkpoint()`, `_recover_existing_clip()` in pipeline
 
-**2. Unified API Pattern for Secret Management:**
+**2. Secret Management Pattern:**
 - User-specific API keys stored in Secret Manager: `ai_ad_agent_{user_id}_gemini_api_key`
 - Falls back to global keys if user doesn't have custom keys
 - See `get_user_secret()` in `app/secrets.py` and `get_pipeline()` in `app/routes/ad_agent.py`
@@ -169,9 +168,6 @@ GCP_PROJECT_ID=sound-invention-432122-m5
 FIRESTORE_DATABASE=ai-ad-agent
 GCS_BUCKET_NAME=ai-ad-agent-videos
 
-# Unified API
-UNIFIED_API_BASE_URL=https://unified-api-interface-994684344365.europe-west1.run.app
-
 # Secret Manager (recommended for production)
 USE_SECRET_MANAGER=true
 
@@ -186,16 +182,12 @@ API keys stored in GCP Secret Manager (NOT in code or .env):
 
 ```bash
 # Global keys (fallback)
-unified_api_google_api_key         # Gemini API key
+unified_api_google_api_key         # Gemini API key (legacy name in GCP Secret Manager)
 eleven-labs-api-key                # ElevenLabs API key
 
 # User-specific keys (optional)
 ai_ad_agent_{user_id}_gemini_api_key
 ai_ad_agent_{user_id}_elevenlabs_api_key
-
-# Unified API credentials
-ai_ad_agent_unified_api_email
-ai_ad_agent_unified_api_password
 ```
 
 Secret Manager integration is in `app/secrets.py` - uses Google's Secret Manager client with Application Default Credentials (ADC).
@@ -294,7 +286,7 @@ If you see "Failed to load secrets from Secret Manager", ensure the service acco
 
 ### Authentication Issues
 
-The system uses JWT tokens from Unified API. If you get 401 errors:
+The system uses JWT tokens. If you get 401 errors:
 1. Check token is valid: `GET /api/auth/me` with Bearer token
 2. Verify token hasn't expired (default: 1440 minutes)
 3. Re-authenticate: `POST /api/auth/login`

@@ -96,7 +96,6 @@ class GeminiClient:
         prompt: str,
         system_instruction: Optional[str] = None,
         temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None,
     ) -> str:
         """
         Generate text using Gemini via the google-genai SDK.
@@ -105,19 +104,15 @@ class GeminiClient:
             prompt: The user prompt
             system_instruction: Optional system instruction
             temperature: Creativity level (0.0-1.0)
-            max_tokens: Maximum tokens to generate
 
         Returns:
             Generated text response
         """
         if temperature is None:
             temperature = settings.GEMINI_TEMPERATURE
-        if max_tokens is None:
-            max_tokens = settings.GEMINI_MAX_TOKENS
 
         config = types.GenerateContentConfig(
             temperature=temperature,
-            max_output_tokens=max_tokens,
         )
 
         if system_instruction:
@@ -245,7 +240,6 @@ Return your analysis as JSON with keys: confidence_score, description."""
         try:
             config = types.GenerateContentConfig(
                 temperature=settings.GEMINI_VISION_TEMPERATURE,
-                max_output_tokens=settings.GEMINI_VISION_MAX_TOKENS,
                 system_instruction=system_instruction,
             )
 

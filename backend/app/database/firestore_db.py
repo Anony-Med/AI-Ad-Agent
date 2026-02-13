@@ -16,7 +16,7 @@ class FirestoreDB:
     def __init__(self):
         """Initialize Firestore client."""
         try:
-            # Use Application Default Credentials (same pattern as Unified API)
+            # Use Application Default Credentials
             # This automatically works with gcloud auth application-default login
             database_id = getattr(settings, 'FIRESTORE_DATABASE', 'ai-ad-agent')
             self.db = firestore.Client(

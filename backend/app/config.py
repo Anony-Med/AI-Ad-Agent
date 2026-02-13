@@ -36,7 +36,6 @@ class Settings(BaseSettings):
     SECRET_NAME_GEMINI: str = "unified_api_google_api_key"
     SECRET_NAME_ELEVENLABS: str = "eleven-labs-api-key"
     SECRET_NAME_ANTHROPIC: str = "ai_ad_agent_anthropic_api_key"
-    SECRET_NAME_OPENAI: str = "unified_api_openai_api_key"
 
     # JWT Authentication
     JWT_SECRET_KEY: str = "change-me-in-production"  # Override via env or Secret Manager
@@ -54,14 +53,17 @@ class Settings(BaseSettings):
     # ──────────────────────────────────────────────
     # AI Models
     # ──────────────────────────────────────────────
-    VEO_MODEL_ID: str = "veo-3.1-fast-generate-preview"
+    # VEO_MODEL_ID: str = "veo-3.1-fast-generate-preview"
+    VEO_MODEL_ID: str = "veo-3.1-generate-preview"
     VEO_REGION: str = "us-central1"  # Veo API region (may differ from GCP_REGION)
-    GEMINI_MODEL: str = "gemini-3-flash-preview"
+    # GEMINI_MODEL: str = "gemini-3-flash-preview"
+    GEMINI_MODEL: str = "gemini-3-pro-preview"
     GEMINI_REGION: str = "global"  # Gemini 3 requires 'global' location
     ELEVENLABS_TTS_MODEL: str = "eleven_turbo_v2_5"
     ELEVENLABS_STS_MODEL: str = "eleven_english_sts_v2"  # Speech-to-Speech
-    ANTHROPIC_MODEL: str = "claude-sonnet-4-5-20250929"
-    ANTHROPIC_MAX_TOKENS: int = 4096
+    # ANTHROPIC_MODEL: str = "claude-sonnet-4-5-20250929"
+    ANTHROPIC_MODEL: str = "claude-opus-4-6"
+    ANTHROPIC_MAX_TOKENS: int = 128000
     GEMINI_IMAGE_MODEL: str = "gemini-3-pro-image-preview"
     GEMINI_IMAGE_REGION: str = "global"  # Gemini 3 Pro Image requires 'global' location
 
@@ -133,18 +135,15 @@ class Settings(BaseSettings):
     # Gemini Text Generation
     # ──────────────────────────────────────────────
     GEMINI_TEMPERATURE: float = 0.7
-    GEMINI_MAX_TOKENS: int = 2048
     GEMINI_TEMPERATURE_CREATIVE: float = 0.8
-    GEMINI_MAX_TOKENS_COMPACT: int = 1024
     GEMINI_VISION_TEMPERATURE: float = 0.3
-    GEMINI_VISION_MAX_TOKENS: int = 1024
 
     # ──────────────────────────────────────────────
     # Gemini Image Generation
     # ──────────────────────────────────────────────
     GEMINI_IMAGE_TEMPERATURE: float = 1.0
     GEMINI_IMAGE_TOP_P: float = 0.95
-    GEMINI_IMAGE_MAX_TOKENS: int = 32768
+    GEMINI_IMAGE_MAX_TOKENS: int = 65535
     GEMINI_IMAGE_SIZE: str = "1K"
     GEMINI_IMAGE_OUTPUT_MIME: str = "image/png"
     GEMINI_IMAGE_GENERATION_ATTEMPTS: int = 3

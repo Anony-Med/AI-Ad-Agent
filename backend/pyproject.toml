@@ -1,7 +1,7 @@
 [project]
 name = "ai-ad-agent"
 version = "0.1.0"
-description = "AI-powered ad creative generation agent using Unified API"
+description = "AI-powered ad creative generation agent"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

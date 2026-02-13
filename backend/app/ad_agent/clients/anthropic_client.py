@@ -67,17 +67,18 @@ class AnthropicClient:
         Returns:
             Anthropic Message object with content blocks (text and/or tool_use)
         """
-        response = await self.client.messages.create(
+        async with self.client.messages.stream(
             model=model or self.model,
             max_tokens=max_tokens or self.max_tokens,
             system=system,
             tools=tools,
             messages=messages,
-        )
+        ) as stream:
+            message = await stream.get_final_message()
 
         logger.debug(
-            f"Anthropic API response: stop_reason={response.stop_reason}, "
-            f"usage=input={response.usage.input_tokens}/output={response.usage.output_tokens}"
+            f"Anthropic API response: stop_reason={message.stop_reason}, "
+            f"usage=input={message.usage.input_tokens}/output={message.usage.output_tokens}"
         )
 
-        return response
+        return message

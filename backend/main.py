@@ -11,6 +11,7 @@ from app.routes import (
     campaigns_router,
     assets_router,
     billing_router,
+    history_router,
 )
 from app.routes.ad_agent import router as ad_agent_router
 
@@ -161,6 +162,7 @@ app.include_router(auth_router, prefix="/api")
 app.include_router(campaigns_router, prefix="/api")
 app.include_router(assets_router, prefix="/api")
 app.include_router(billing_router, prefix="/api")
+app.include_router(history_router, prefix="/api")
 app.include_router(ad_agent_router, prefix="/api")  # AI Ad Agent
 
 

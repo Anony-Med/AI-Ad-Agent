@@ -54,7 +54,7 @@ Environment: development
    Secrets found: 2
      - ai-ad-agent-secret-key
        ✅ Accessible
-     - unified-api-credentials
+     - ai-ad-agent-jwt-secret-key
        ✅ Accessible
 
 📊 SUMMARY
@@ -65,92 +65,6 @@ Environment: development
 ✅ PASS - Secret Manager
 ================================================================================
 ✅ All checks passed! Your GCP setup is ready.
-```
-
----
-
-### 2. `fetch_models.py`
-
-Fetch all available models from the Unified API.
-
-**Usage:**
-```bash
-# Interactive (will prompt for email/password)
-python scripts/fetch_models.py
-
-# With credentials
-python scripts/fetch_models.py --email user@example.com --password mypassword
-
-# Custom output file
-python scripts/fetch_models.py --output models_export.json
-
-# No summary (just save to file)
-python scripts/fetch_models.py --no-summary
-```
-
-**Options:**
-- `--email` - Email for Unified API login
-- `--password` - Password for Unified API login
-- `--output` - Output file path (default: data/models.json)
-- `--no-summary` - Don't print summary to console
-
-**Example Output:**
-```
-Logging in to Unified API...
-✅ Login successful! Token: eyJhbGciOiJIUzI1NiIs...
-Fetching available models...
-✅ Found 12 models
-
-================================================================================
-📊 UNIFIED API MODELS SUMMARY
-================================================================================
-
-📈 Total Models: 12
-🎬 Video Models: 4
-🖼️  Image Models: 8
-🔧 Other Models: 0
-
---------------------------------------------------------------------------------
-🎬 VIDEO MODELS:
---------------------------------------------------------------------------------
-
-  Name: Google Veo 3.1
-  ID: veo
-  Type: video
-  Description: High-quality video generation with advanced motion control
-  Aspect Ratios: 16:9, 9:16, 1:1
-  Max Duration: 30s
-  Price: $0.50
-
-  Name: OpenAI Sora
-  ID: sora
-  Type: video
-  ...
-
---------------------------------------------------------------------------------
-🖼️  IMAGE MODELS:
---------------------------------------------------------------------------------
-
-  Name: Gemini Nanobanana
-  ID: nanobanana
-  Type: image
-  ...
-
-================================================================================
-
-✅ Models data saved to: data/models.json
-✅ Success! Models data saved to data/models.json
-```
-
-**Output File Format:**
-```json
-{
-  "total_models": 12,
-  "video_models": [...],
-  "image_models": [...],
-  "other_models": [],
-  "all_models": [...]
-}
 ```
 
 ---

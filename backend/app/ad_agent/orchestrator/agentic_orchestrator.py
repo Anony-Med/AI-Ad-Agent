@@ -134,7 +134,7 @@ Call `upload_and_finalize` with the final video URL.
 
 ## Important Rules
 - After finishing all steps, provide a final summary as JSON in this exact format:
-  {"final_video_url": "<url>", "clips_generated": <number>, "total_duration_seconds": <number>}
+  {{"final_video_url": "<url>", "clips_generated": <number>, "total_duration_seconds": <number>}}
 
 ## Error Handling
 - If a tool returns an error, analyze it and decide: retry with adjusted parameters. If retries are exhausted, fail the whole process with an error message.

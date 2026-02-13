@@ -17,8 +17,9 @@ from .enums import (
 # ============================================================================
 
 class UserLogin(BaseModel):
-    """User login request."""
-    email: str
+    """User login request. Accepts username (treated as email) or email."""
+    username: Optional[str] = None
+    email: Optional[str] = None
     password: str
 
 
@@ -27,22 +28,35 @@ class UserRegister(BaseModel):
     email: str
     password: str
     name: Optional[str] = None
+    username: Optional[str] = None
+    full_name: Optional[str] = None
 
 
 class Token(BaseModel):
-    """JWT token response."""
+    """JWT token response with user info."""
     access_token: str
     token_type: str = "bearer"
+    user_id: Optional[str] = None
+    email: Optional[str] = None
+    username: Optional[str] = None
 
 
 class UserInfo(BaseModel):
     """User information."""
-    id: str = Field(alias="user_id")
+    user_id: str
     email: str
+    username: Optional[str] = None
     name: Optional[str] = None
+    full_name: Optional[str] = None
+    is_active: bool = True
     created_at: Optional[datetime] = None
 
-    model_config = {"populate_by_name": True}  # Accept both "id" and "user_id"
+
+class UserUpdate(BaseModel):
+    """User profile update request."""
+    email: Optional[str] = None
+    name: Optional[str] = None
+    full_name: Optional[str] = None
 
 
 # ============================================================================
