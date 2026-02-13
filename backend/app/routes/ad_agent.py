@@ -286,7 +286,7 @@ async def test_prompt_generation(
         prompts, segments = await agent.generate_prompts_with_segments(
             script=script,
             system_prompt=DEFAULT_VEO_PROMPT_SYSTEM_INSTRUCTION,
-            num_segments=settings.MAX_CLIPS_PER_AD,
+            num_segments=settings.CLIPS_PER_AD,
             character_name=character_name,
         )
 

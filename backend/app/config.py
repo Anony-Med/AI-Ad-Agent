@@ -101,8 +101,8 @@ class Settings(BaseSettings):
     VEO_ADD_WATERMARK: bool = True
     VEO_SAMPLE_COUNT: int = 4
     DEFAULT_CLIP_DURATION: int = 8
-    MAX_CLIP_DURATION: int = 8
-    MAX_CLIPS_PER_AD: int = 2
+    CLIP_DURATION: int = 8
+    CLIPS_PER_AD: int = 2
     MAX_CLIP_RETRIES: int = 3
 
     # ──────────────────────────────────────────────
@@ -151,7 +151,7 @@ class Settings(BaseSettings):
     # ──────────────────────────────────────────────
     # Clip Verification
     # ──────────────────────────────────────────────
-    VERIFICATION_THRESHOLD: float = 0.6
+    VERIFICATION_THRESHOLD: float = 0.95
     VERIFICATION_MAX_RETRIES: int = 3
 
     # ──────────────────────────────────────────────
@@ -168,6 +168,7 @@ class Settings(BaseSettings):
     # ──────────────────────────────────────────────
     AGENTIC_MAX_ITERATIONS: int = 25
     AGENTIC_MAX_DURATION_SECONDS: int = 1800  # 30 minutes
+    HUMAN_IN_THE_LOOP: bool = False  # Console approval gate before each tool call
 
     # Asset Storage
     ASSET_DOWNLOAD_ENABLED: bool = True

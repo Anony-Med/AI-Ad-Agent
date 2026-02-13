@@ -42,12 +42,12 @@ file_handler = RotatingFileHandler(
 file_handler.setLevel(log_level)
 file_handler.setFormatter(logging.Formatter(log_format))
 
-# Configure root logger
-logging.basicConfig(
-    level=log_level,
-    format=log_format,
-    handlers=[console_handler, file_handler]
-)
+# Configure root logger directly (avoid basicConfig which conflicts with uvicorn)
+root_logger = logging.getLogger()
+root_logger.setLevel(log_level)
+root_logger.handlers.clear()
+root_logger.addHandler(console_handler)
+root_logger.addHandler(file_handler)
 
 logger = logging.getLogger(__name__)
 logger.info(f"Logging to file: {os.path.join(log_dir, 'ai_ad_agent.log')}")
@@ -193,10 +193,20 @@ async def root():
 if __name__ == "__main__":
     import uvicorn
 
+    # Use UVICORN_LOG_CONFIG to prevent uvicorn from adding duplicate handlers
+    log_config = uvicorn.config.LOGGING_CONFIG
+    log_config["handlers"] = {}
+    log_config["loggers"] = {
+        "uvicorn": {"handlers": [], "level": settings.LOG_LEVEL, "propagate": True},
+        "uvicorn.error": {"handlers": [], "level": settings.LOG_LEVEL, "propagate": True},
+        "uvicorn.access": {"handlers": [], "level": settings.LOG_LEVEL, "propagate": True},
+    }
+
     uvicorn.run(
         "main:app",
         host=settings.HOST,
         port=settings.PORT,
         reload=settings.DEBUG,
         log_level=settings.LOG_LEVEL.lower(),
+        log_config=log_config,
     )

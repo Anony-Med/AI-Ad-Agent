@@ -194,7 +194,7 @@ Number of segments: {num_segments}
             logger.info(f"Generated {len(prompts)} prompts with script segments")
             return prompts, segments
         else:
-            raise RuntimeError(f"Gemini returned unparseable response: {response[:200]}")
+            raise RuntimeError(f"Gemini returned unparseable response: {response}")
 
     async def analyze_video_content(
         self,
@@ -268,7 +268,7 @@ Return your analysis as JSON with keys: confidence_score, description."""
                 await self._save_to_gcs(f"clip_verification_{clip_label}.json", {
                     "timestamp": datetime.utcnow().isoformat(),
                     "model": self.model,
-                    "video_url": video_url[:200],
+                    "video_url": video_url,
                     "system_instruction": system_instruction,
                     "script_segment": script_segment,
                     "veo_prompt": prompt,
@@ -283,7 +283,7 @@ Return your analysis as JSON with keys: confidence_score, description."""
                 await self._save_to_gcs(f"clip_verification_{clip_label}.json", {
                     "timestamp": datetime.utcnow().isoformat(),
                     "model": self.model,
-                    "video_url": video_url[:200],
+                    "video_url": video_url,
                     "script_segment": script_segment,
                     "raw_response": text,
                     "parse_error": True,
@@ -291,7 +291,7 @@ Return your analysis as JSON with keys: confidence_score, description."""
 
                 return {
                     "confidence_score": 0.0,
-                    "description": f"Failed to parse analysis response. Raw: {text[:300]}",
+                    "description": f"Failed to parse analysis response. Raw: {text}",
                 }
 
         except Exception as e:
@@ -322,19 +322,19 @@ Return your analysis as JSON with keys: confidence_score, description."""
     async def generate_scene_image(
         self,
         prompt: str,
-        character_image_b64: str,
+        character_image_b64: Optional[str] = None,
         aspect_ratio: str = "16:9",
     ) -> bytes:
         """
         Generate a scene image using Gemini's image generation model.
 
-        The prompt is passed directly to the model alongside the character
-        reference image. The caller (orchestrator) is responsible for crafting
-        an appropriate prompt.
+        The prompt is passed directly to the model. When a character reference
+        image is provided, it is included alongside the prompt so the generated
+        image features that character.
 
         Args:
             prompt: The image generation prompt (crafted by the orchestrator)
-            character_image_b64: Base64-encoded character reference image
+            character_image_b64: Optional base64-encoded character reference image
             aspect_ratio: Desired aspect ratio (e.g., "16:9", "9:16")
 
         Returns:
@@ -346,8 +346,6 @@ Return your analysis as JSON with keys: confidence_score, description."""
         import base64
 
         image_client = self._get_image_client()
-
-        character_bytes = base64.b64decode(character_image_b64)
 
         image_aspect = aspect_ratio or settings.VEO_DEFAULT_ASPECT_RATIO
 
@@ -371,13 +369,13 @@ Return your analysis as JSON with keys: confidence_score, description."""
             ),
         )
 
-        contents = types.Content(
-            role="user",
-            parts=[
-                types.Part.from_bytes(data=character_bytes, mime_type="image/jpeg"),
-                types.Part.from_text(text=prompt),
-            ],
-        )
+        parts = []
+        if character_image_b64:
+            character_bytes = base64.b64decode(character_image_b64)
+            parts.append(types.Part.from_bytes(data=character_bytes, mime_type="image/jpeg"))
+        parts.append(types.Part.from_text(text=prompt))
+
+        contents = types.Content(role="user", parts=parts)
 
         try:
             response = await image_client.aio.models.generate_content(
@@ -397,7 +395,7 @@ Return your analysis as JSON with keys: confidence_score, description."""
                     await self._save_to_gcs("scene_image_generation.json", {
                         "timestamp": datetime.utcnow().isoformat(),
                         "model": self._image_model,
-                        "prompt": prompt[:500],
+                        "prompt": prompt,
                         "aspect_ratio": image_aspect,
                         "image_size_bytes": len(image_bytes),
                     })
@@ -410,7 +408,7 @@ Return your analysis as JSON with keys: confidence_score, description."""
                     response_text += part.text
 
             raise RuntimeError(
-                f"Gemini returned no image. Text response: {response_text[:200]}"
+                f"Gemini returned no image. Text response: {response_text}"
             )
 
         except RuntimeError:

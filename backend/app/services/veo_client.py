@@ -89,15 +89,15 @@ class DirectVeoClient:
         Raises:
             VeoAPIError: If the API request fails
         """
-        duration_seconds = duration_seconds if duration_seconds is not None else settings.MAX_CLIP_DURATION
+        duration_seconds = duration_seconds if duration_seconds is not None else settings.CLIP_DURATION
         aspect_ratio = aspect_ratio or settings.VEO_DEFAULT_ASPECT_RATIO
         resolution = resolution or settings.VEO_DEFAULT_RESOLUTION
         sample_count = sample_count if sample_count is not None else settings.VEO_SAMPLE_COUNT
 
         # Validate duration
         if duration_seconds not in [4, 6, 8]:
-            logger.warning(f"Invalid duration {duration_seconds}, using {settings.MAX_CLIP_DURATION}s")
-            duration_seconds = settings.MAX_CLIP_DURATION
+            logger.warning(f"Invalid duration {duration_seconds}, using {settings.CLIP_DURATION}s")
+            duration_seconds = settings.CLIP_DURATION
 
         # Decode base64 image to raw bytes for the SDK
         image_bytes = base64.b64decode(character_image_b64)
@@ -116,7 +116,7 @@ class DirectVeoClient:
         )
 
         logger.info(f"Creating Veo video job (prompt length: {len(prompt)} chars)")
-        logger.info(f"  Prompt preview: {prompt[:120]}...")
+        logger.info(f"  Prompt preview: {prompt}...")
         logger.info(f"  Full prompt: {prompt}")
         logger.debug(f"  Duration: {duration_seconds}s | Resolution: {resolution} | Aspect: {aspect_ratio}")
 
@@ -173,15 +173,15 @@ class DirectVeoClient:
         Raises:
             VeoAPIError: If the API request fails
         """
-        duration_seconds = duration_seconds if duration_seconds is not None else settings.MAX_CLIP_DURATION
+        duration_seconds = duration_seconds if duration_seconds is not None else settings.CLIP_DURATION
         aspect_ratio = aspect_ratio or settings.VEO_DEFAULT_ASPECT_RATIO
         resolution = resolution or settings.VEO_DEFAULT_RESOLUTION
         sample_count = sample_count if sample_count is not None else settings.VEO_SAMPLE_COUNT
 
         # Validate duration
         if duration_seconds not in [4, 6, 8]:
-            logger.warning(f"Invalid duration {duration_seconds}, using {settings.MAX_CLIP_DURATION}s")
-            duration_seconds = settings.MAX_CLIP_DURATION
+            logger.warning(f"Invalid duration {duration_seconds}, using {settings.CLIP_DURATION}s")
+            duration_seconds = settings.CLIP_DURATION
 
         source = types.GenerateVideosSource(
             prompt=prompt,
@@ -196,7 +196,7 @@ class DirectVeoClient:
             generate_audio=generate_audio,
         )
 
-        logger.info(f"Extending video with prompt: {prompt[:100]}...")
+        logger.info(f"Extending video with prompt: {prompt}...")
         logger.debug(f"  Duration: {duration_seconds}s | Resolution: {resolution} | Aspect: {aspect_ratio}")
 
         try:

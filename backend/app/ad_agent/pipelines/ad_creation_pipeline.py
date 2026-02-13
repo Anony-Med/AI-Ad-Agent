@@ -453,6 +453,7 @@ class AdCreationPipeline:
                 anthropic_api_key=self.anthropic_api_key,
                 tool_context=tool_ctx,
                 progress_callback=self.progress_callback,
+                human_in_the_loop=settings.HUMAN_IN_THE_LOOP,
             )
 
             result = await orchestrator.run(
@@ -527,7 +528,7 @@ class AdCreationPipeline:
         prompts, segments = await self.prompt_agent.generate_prompts_with_segments(
             script=request.script,
             system_prompt=DEFAULT_VEO_PROMPT_SYSTEM_INSTRUCTION,
-            num_segments=settings.MAX_CLIPS_PER_AD,
+            num_segments=settings.CLIPS_PER_AD,
             character_name=request.character_name or "character",
         )
 
